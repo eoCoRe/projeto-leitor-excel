@@ -288,7 +288,6 @@ def _write_escoragem_sheet(ws, grupos: List[Dict], model_name: str) -> None:
     s.value = (
         f"Soma dos Pesos: {soma_pesos * 100:.0f}%"
         f"     |     Pontuação Máxima Total: {_fmt_num(total_pontos)} pts"
-        f"     |     Pontos = (score / max_score) × Pontos Max"
     )
     s.font      = Font(italic=True, size=9, name="Calibri", color="1F4E79")
     s.fill      = PatternFill("solid", fgColor=_SEP_BG)
@@ -702,8 +701,6 @@ def build_preview_html(data: dict) -> str:
         Soma dos Pesos: <strong>{soma_fmt}</strong>
         &nbsp;&nbsp;|&nbsp;&nbsp;
         Pontuação Máxima Total: <strong>{total_fmt} pts</strong>
-        &nbsp;&nbsp;|&nbsp;&nbsp;
-        Pontos&nbsp;=&nbsp;(score&nbsp;/&nbsp;max_score)&nbsp;&times;&nbsp;Pontos&nbsp;Max
       </td></tr>
       <tr>{th}</tr>
     </thead>
