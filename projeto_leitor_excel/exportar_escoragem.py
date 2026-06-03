@@ -153,6 +153,17 @@ def _fmt_validade(val) -> str:
     return str(val)
 
 
+def _peso_to_float(peso) -> float:
+    """Normaliza peso para decimal (0.0–1.0), independente de como foi armazenado."""
+    if isinstance(peso, float) and 0 < peso <= 1:
+        return peso
+    try:
+        v = float(peso)
+        return v / 100.0 if v > 1 else v
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def safe_filename(text: str) -> str:
     return re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", text).strip() or "escoragem"
 
@@ -253,55 +264,92 @@ def _dat(cell, value, bg: str = "", bold: bool = False,
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _write_escoragem_sheet(ws, grupos: List[Dict], model_name: str) -> None:
-    # Colunas: A=Grupo | B=Variavel | C=Faixa de Pontuacao | D=Score | E=Peso
-    ws.merge_cells("A1:E1")
-    c = ws["A1"]
-    c.value     = "REGRA MOTOR ESCORAGEM"
-    c.font      = Font(bold=True, size=14, name="Calibri", color="1F4E79")
-    c.alignment = Alignment(horizontal="center", vertical="center")
-    ws.row_dimensions[1].height = 36
+    # Colunas: A=Grupo | B=Variavel | C=Faixa | D=Pontos | E=Pontos Max | F=Peso
+    _N = 6
+    _ALT_BG = "EBF3FA"   # azul muito claro para linhas alternadas
+    _SEP_BG = "D6E4F0"   # azul claro para subtítulo
 
+    soma_pesos   = sum(_peso_to_float(v["peso"]) for g in grupos for v in g["variaveis"])
+    total_pontos = soma_pesos * 1000
+
+    # ── Linha 1: Banner ───────────────────────────────────────────────────
+    ws.merge_cells(f"A1:{get_column_letter(_N)}1")
+    c = ws["A1"]
+    c.value     = f"REGRA MOTOR ESCORAGEM  —  {model_name}"
+    c.font      = Font(bold=True, size=14, name="Calibri", color="FFFFFF")
+    c.fill      = PatternFill("solid", fgColor="1F4E79")
+    c.alignment = Alignment(horizontal="center", vertical="center")
+    c.border    = Border(bottom=Side(style="medium", color="AAAAAA"))
+    ws.row_dimensions[1].height = 40
+
+    # ── Linha 2: Subtítulo com total ──────────────────────────────────────
+    ws.merge_cells(f"A2:{get_column_letter(_N)}2")
+    s = ws["A2"]
+    s.value = (
+        f"Soma dos Pesos: {soma_pesos * 100:.0f}%"
+        f"     |     Pontuação Máxima Total: {_fmt_num(total_pontos)} pts"
+        f"     |     Pontos = (score / max_score) × Pontos Max"
+    )
+    s.font      = Font(italic=True, size=9, name="Calibri", color="1F4E79")
+    s.fill      = PatternFill("solid", fgColor=_SEP_BG)
+    s.alignment = Alignment(horizontal="center", vertical="center", wrap_text=False)
+    s.border    = Border(bottom=Side(style="thin", color="B0C8E0"))
+    ws.row_dimensions[2].height = 18
+
+    # ── Linha 3: Cabeçalhos ───────────────────────────────────────────────
     hdrs = [
-        ("Grupo",              "1F4E79", "FFFFFF"),
-        ("Variaveis\nEscore",  "1F4E79", "FFFFFF"),
-        ("Faixa de\nPontuacao","1F4E79", "FFFFFF"),
-        ("Score\n(0-100)",     "C00000", "FFFFFF"),
-        ("Peso\n(0-100)%",     "C00000", "FFFFFF"),
+        ("Grupo",               "1F4E79", "FFFFFF"),
+        ("Variáveis\nEscore",   "1F4E79", "FFFFFF"),
+        ("Faixa de\nPontuação", "1F4E79", "FFFFFF"),
+        ("Pontos\nFaixa",       "C00000", "FFFFFF"),
+        ("Pontos\nMáx",         "C00000", "FFFFFF"),
+        ("Peso\n(0-100)%",      "C00000", "FFFFFF"),
     ]
     for col, (txt, bg, fg) in enumerate(hdrs, 1):
-        _hdr(ws.cell(2, col), txt, bg=bg, fg=fg)
-    ws.row_dimensions[2].height = 30
+        _hdr(ws.cell(3, col), txt, bg=bg, fg=fg)
+    ws.row_dimensions[3].height = 32
 
-    cur = 3
+    # ── Linhas de dados ───────────────────────────────────────────────────
+    # Colunas: D=Pontos Faixa | E=Pontos Max | F=Peso
+    cur = 4
+    row_parity = 0
+
     for grupo in grupos:
         g_start = cur
-        g_rows  = sum(len(v["pontuacoes"]) for v in grupo["variaveis"])
 
         for var in grupo["variaveis"]:
-            v_start = cur
-            max_s   = var["max_score"]
+            v_start      = cur
+            max_s        = var["max_score"]
+            pontos_max_v = _peso_to_float(var["peso"]) * 1000
+            pontos_max_s = str(_fmt_num(pontos_max_v)) if pontos_max_v else ""
 
             for regra in var["pontuacoes"]:
                 score = regra["score"]
+                alt   = _ALT_BG if row_parity % 2 == 0 else ""
                 try:
                     sf   = float(score) if score != "" else 0.0
                     xcol = _score_color_xl(sf, max_s)
-                    sdsp = _fmt_num(score) if score != "" else 0
+                    pf   = (sf / max_s) * pontos_max_v if max_s > 0 else 0.0
+                    pfs  = _fmt_num(pf)
                 except (TypeError, ValueError):
-                    xcol, sdsp = "FFFFFF", score
+                    xcol, pfs = "FFFFFF", ""
 
-                _dat(ws.cell(cur, 3), regra["condicao"], align="left")
-                _dat(ws.cell(cur, 4), sdsp, bg=xcol, bold=True)
+                _dat(ws.cell(cur, 3), regra["condicao"], align="left", bg=alt)
+                _dat(ws.cell(cur, 4), pfs, bg=xcol, bold=True)
+                row_parity += 1
                 cur += 1
 
             v_end = cur - 1
-            for col in (2, 5):
+            # Mescla B, E e F por variável
+            for col in (2, 5, 6):
                 if v_end > v_start:
                     ws.merge_cells(
                         f"{get_column_letter(col)}{v_start}:{get_column_letter(col)}{v_end}"
                     )
-            _dat(ws.cell(v_start, 2), var["nome"],            align="center", wrap=True)
-            _dat(ws.cell(v_start, 5), _fmt_peso(var["peso"]), align="center")
+            _dat(ws.cell(v_start, 2), var["nome"], align="center", wrap=True)
+            _dat(ws.cell(v_start, 5), pontos_max_s, align="center",
+                 bold=True, font_color="1F4E79")
+            _dat(ws.cell(v_start, 6), _fmt_peso(var["peso"]), align="center")
 
         g_end = cur - 1
         if g_end > g_start:
@@ -314,9 +362,25 @@ def _write_escoragem_sheet(ws, grupos: List[Dict], model_name: str) -> None:
                                   text_rotation=90, wrap_text=False)
         gc.border    = Border(left=_MEDIUM, right=_THIN, top=_MEDIUM, bottom=_MEDIUM)
 
-    for col, w in enumerate([8, 32, 32, 12, 12], 1):
+    # ── Linha de total ────────────────────────────────────────────────────
+    total_row = cur
+    ws.merge_cells(f"A{total_row}:D{total_row}")
+    tc = ws.cell(total_row, 1)
+    tc.value     = "TOTAL"
+    tc.font      = Font(bold=True, size=10, name="Calibri", color="FFFFFF")
+    tc.fill      = PatternFill("solid", fgColor="1F4E79")
+    tc.alignment = Alignment(horizontal="center", vertical="center")
+    tc.border    = _BTHIN
+    _dat(ws.cell(total_row, 5), _fmt_num(total_pontos), bg="1F4E79",
+         bold=True, font_color="FFFFFF")
+    _dat(ws.cell(total_row, 6), f"{soma_pesos * 100:.0f}%", bg="1F4E79",
+         font_color="FFFFFF")
+    ws.row_dimensions[total_row].height = 20
+
+    # ── Larguras de coluna ────────────────────────────────────────────────
+    for col, w in enumerate([8, 32, 32, 12, 12, 12], 1):
         ws.column_dimensions[get_column_letter(col)].width = w
-    ws.freeze_panes = "C3"
+    ws.freeze_panes = "C4"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -553,12 +617,17 @@ def build_preview_html(data: dict) -> str:
 
     n_cols = 7 + (1 if has_aplic else 0)
 
+    soma_pesos   = sum(_peso_to_float(v["peso"]) for g in grupos for v in g["variaveis"])
+    total_pontos = soma_pesos * 1000
+    soma_fmt     = f"{soma_pesos * 100:.0f}%"
+    total_fmt    = str(_fmt_num(total_pontos)) if total_pontos else "—"
+
     th  = "<th>Grupo</th><th>Variaveis Escore</th>"
     th += "<th>Aplicar a</th>" if has_aplic else ""
     th += "<th>Faixa de Pontuacao</th>"
-    th += '<th class="hdr-score">Score (0-100)</th>'
     th += '<th class="hdr-score">% do Max</th>'
-    th += '<th class="hdr-score">N Variavel</th>'
+    th += '<th class="hdr-score">Pontos</th>'
+    th += '<th class="hdr-score">Pontos Max</th>'
     th += '<th class="hdr-score">Peso (0-100)%</th>'
 
     rows = []
@@ -567,9 +636,11 @@ def build_preview_html(data: dict) -> str:
         g_done  = False
 
         for var in grupo["variaveis"]:
-            v_cnt   = len(var["pontuacoes"])
-            max_s   = var["max_score"]
-            v_first = True
+            v_cnt        = len(var["pontuacoes"])
+            max_s        = var["max_score"]
+            v_first      = True
+            pontos_max_v = _peso_to_float(var["peso"]) * 1000
+            pontos_max_s = str(_fmt_num(pontos_max_v)) if pontos_max_v else ""
 
             for regra in var["pontuacoes"]:
                 score = regra["score"]
@@ -581,8 +652,10 @@ def build_preview_html(data: dict) -> str:
                     pct   = sf / max_s * 100 if max_s > 0 else 0.0
                     ptxt  = f"{pct:.1f}%"
                     sdsp  = str(_fmt_num(score)) if score != "" else "0"
+                    pf    = (sf / max_s) * pontos_max_v if max_s > 0 else 0.0
+                    pftxt = str(_fmt_num(pf))
                 except (TypeError, ValueError):
-                    bg_c, fc, ptxt, sdsp = "#FFFFFF", "#000000", "", str(score)
+                    bg_c, fc, ptxt, sdsp, pftxt = "#FFFFFF", "#000000", "", str(score), ""
 
                 r = "<tr>"
                 if not g_done:
@@ -595,12 +668,11 @@ def build_preview_html(data: dict) -> str:
                         r += f'<td rowspan="{v_cnt}">{_html.escape(var["aplicar_a"])}</td>'
 
                 r += f'<td class="esc-faixa">{_html.escape(regra["condicao"])}</td>'
-                r += (f'<td style="background:{bg_c};color:{fc};font-weight:bold">{sdsp}</td>')
-                r += (f'<td style="background:{bg_c};color:{fc}">{ptxt}</td>')
+                r += f'<td style="background:{bg_c};color:{fc}">{ptxt}</td>'
+                r += f'<td style="background:{bg_c};color:{fc};font-weight:bold">{pftxt}</td>'
 
                 if v_first:
-                    nvar = str(_fmt_num(max_s)) if max_s else ""
-                    r += f'<td rowspan="{v_cnt}" style="font-weight:bold">{nvar}</td>'
+                    r += f'<td rowspan="{v_cnt}" style="font-weight:bold;color:#1F4E79">{pontos_max_s}</td>'
                     r += f'<td rowspan="{v_cnt}">{_fmt_peso(var["peso"])}</td>'
                     v_first = False
 
@@ -609,11 +681,29 @@ def build_preview_html(data: dict) -> str:
 
     return f"""
 {_BASE_CSS}
+<style>
+  .esc-subtitle {{
+    background: #D6E4F0;
+    color: #1F4E79;
+    font-size: 11px;
+    text-align: center;
+    padding: 6px 10px;
+    border-bottom: 1px solid #B0C8E0;
+  }}
+  .esc-subtitle strong {{ color: #C00000; }}
+</style>
 <div class="esc-wrap">
   <table class="esc-tbl">
     <thead>
       <tr><td class="esc-title" colspan="{n_cols}">
         REGRA MOTOR ESCORAGEM &mdash; {_html.escape(model_name)}
+      </td></tr>
+      <tr><td class="esc-subtitle" colspan="{n_cols}">
+        Soma dos Pesos: <strong>{soma_fmt}</strong>
+        &nbsp;&nbsp;|&nbsp;&nbsp;
+        Pontuação Máxima Total: <strong>{total_fmt} pts</strong>
+        &nbsp;&nbsp;|&nbsp;&nbsp;
+        Pontos&nbsp;=&nbsp;(score&nbsp;/&nbsp;max_score)&nbsp;&times;&nbsp;Pontos&nbsp;Max
       </td></tr>
       <tr>{th}</tr>
     </thead>
@@ -634,20 +724,63 @@ def build_classificacao_html(data: dict) -> str:
     if not classificacao:
         return "<p>Sem dados de classificacao.</p>"
 
-    rows = []
+    # ── Tabela 1: faixas de classificação ─────────────────────────────────
+    cls_rows = []
     for cls in classificacao:
-        bg  = _RISK_COLORS_CSS.get(cls["risco"].lower(), "#FFFFFF")
+        risco_key = cls["risco"].lower().replace("é", "e")
+        bg  = _RISK_COLORS_CSS.get(risco_key, "#FFFFFF")
         fc  = _font_color_css(bg)
-        rows.append(
+        cls_rows.append(
             f"<tr>"
-            f'<td style="background:{bg};color:{fc};font-weight:bold">'
-            f'{_html.escape(cls["classe"])}</td>'
-            f'<td style="background:{bg};color:{fc}">'
-            f'{_html.escape(cls["risco"])}</td>'
+            f'<td style="background:{bg};color:{fc};font-weight:bold">{_html.escape(cls["classe"])}</td>'
+            f'<td style="background:{bg};color:{fc}">{_html.escape(cls["risco"])}</td>'
             f'<td>{_html.escape(cls["condicao"])}</td>'
             f'<td>{_html.escape(cls["validade"])}</td>'
             f"</tr>"
         )
+
+    # ── Tabela 2: metodologia de limite sugerido ──────────────────────────
+    has_limite = any(cls["fator"] or cls["limite_sugerido"] for cls in classificacao)
+    lim_rows = []
+    for cls in classificacao:
+        risco_key = cls["risco"].lower().replace("é", "e")
+        bg  = _RISK_COLORS_CSS.get(risco_key, "#FFFFFF")
+        fc  = _font_color_css(bg)
+        fator   = cls["fator"] or "—"
+        limite  = cls["limite_sugerido"] or "Fator × Capacidade de Pagamento"
+        lim_rows.append(
+            f"<tr>"
+            f'<td style="background:{bg};color:{fc};font-weight:bold">{_html.escape(cls["classe"])}</td>'
+            f'<td style="background:{bg};color:{fc}">{_html.escape(cls["risco"])}</td>'
+            f'<td style="font-weight:bold">{_html.escape(fator)}</td>'
+            f'<td style="text-align:left;padding-left:10px">{_html.escape(limite)}</td>'
+            f"</tr>"
+        )
+
+    limite_section = ""
+    if has_limite:
+        limite_section = f"""
+<div style="margin-top:20px; overflow-x:auto; border:1px solid #D0D7E3; border-radius:8px;
+            box-shadow:0 1px 4px rgba(0,0,0,0.08); background:#fff;">
+  <table class="cls-tbl" style="max-width:860px;">
+    <thead>
+      <tr>
+        <td colspan="4" style="background:#1F4E79;color:#ffffff;font-family:Calibri,Arial,sans-serif;
+            font-size:13px;font-weight:bold;text-align:center;padding:10px;
+            border-bottom:1px solid #1A406A;border-radius:8px 8px 0 0;">
+          METODOLOGIA DE LIMITE SUGERIDO
+        </td>
+      </tr>
+      <tr>
+        <th>Classe</th>
+        <th>Risco</th>
+        <th>Fator de Limite</th>
+        <th>Limite Sugerido</th>
+      </tr>
+    </thead>
+    <tbody>{"".join(lim_rows)}</tbody>
+  </table>
+</div>"""
 
     return f"""
 {_BASE_CSS}
@@ -695,9 +828,10 @@ def build_classificacao_html(data: dict) -> str:
         <th>Validade</th>
       </tr>
     </thead>
-    <tbody>{"".join(rows)}</tbody>
+    <tbody>{"".join(cls_rows)}</tbody>
   </table>
 </div>
+{limite_section}
 """
 
 
