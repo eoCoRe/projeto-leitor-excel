@@ -21,6 +21,13 @@ st.set_page_config(
     layout="wide",
 )
 
+st.markdown("""
+<style>
+/* Esconde Share, estrela e lápis — mantém só o ícone do GitHub (link <a>) */
+header button { display: none !important; }
+</style>
+""", unsafe_allow_html=True)
+
 st.title("Visualizador e Exportador")
 
 input_mode = st.radio(
