@@ -36,7 +36,7 @@ _CSS_COLORS = {
 }
 
 # Fundos claros exigem texto PRETO; fundos escuros exigem texto BRANCO
-_LIGHT_BG_XL  = {_XL_YELLOW, _XL_LGREEN, "FFC000", "FFFFFF"}
+_LIGHT_BG_XL  = {_XL_YELLOW, _XL_LGREEN, "FFC000", "FFFFFF", "EBF3FA", "D6E4F0"}
 _LIGHT_BG_CSS = {"#FFFF00", "#92D050", "#FFC000", "#FFFFFF"}
 
 _RISK_COLORS_XL = {
@@ -99,9 +99,26 @@ def _score_color_xl(score, max_score) -> str:
 _HTML_ENT = {"&gt;=": ">=", "&lt;=": "<=", "&gt;": ">", "&lt;": "<", "&amp;": "&"}
 
 
+def _extract_rich_text(obj) -> str:
+    """Extrai texto plano de objeto ProseMirror/rich-text doc."""
+    if isinstance(obj, str):
+        return obj
+    if isinstance(obj, dict):
+        if obj.get("type") == "text":
+            return obj.get("text", "")
+        return " ".join(
+            _extract_rich_text(child) for child in obj.get("content", [])
+        ).strip()
+    if isinstance(obj, list):
+        return " ".join(_extract_rich_text(item) for item in obj).strip()
+    return str(obj) if obj is not None else ""
+
+
 def _decode(text) -> str:
     if text is None:
         return ""
+    if isinstance(text, dict):
+        return _extract_rich_text(text)
     if not isinstance(text, str):
         return str(text)
     for k, v in _HTML_ENT.items():
@@ -126,6 +143,10 @@ def _to_str(v) -> str:
 def build_condition(cond1=None, val1=None, cond2=None, val2=None) -> str:
     c1 = _decode(cond1)
     c2 = _decode(cond2)
+    if isinstance(val1, (dict, list)):
+        val1 = _extract_rich_text(val1)
+    if isinstance(val2, (dict, list)):
+        val2 = _extract_rich_text(val2)
     v1 = _fmt_num(val1)
     v2 = _fmt_num(val2)
     if not c1:
@@ -250,7 +271,12 @@ def _hdr(cell, text: str, bg: str = "1F4E79", fg: str = "FFFFFF",
 
 def _dat(cell, value, bg: str = "", bold: bool = False,
          align: str = "center", wrap: bool = False, font_color: str = "") -> None:
-    cell.value = value
+    if isinstance(value, str) and value.startswith("="):
+        # Evita que openpyxl trate a string como fórmula Excel (#NAME? / #VALUE!)
+        cell.value = value
+        cell.data_type = "s"
+    else:
+        cell.value = value
     fc = font_color or (_font_color_xl(bg) if bg else "000000")
     cell.font      = Font(name="Calibri", size=10, bold=bold, color=fc)
     if bg:
@@ -275,7 +301,7 @@ def _write_escoragem_sheet(ws, grupos: List[Dict], model_name: str) -> None:
     # ── Linha 1: Banner ───────────────────────────────────────────────────
     ws.merge_cells(f"A1:{get_column_letter(_N)}1")
     c = ws["A1"]
-    c.value     = f"REGRA MOTOR ESCORAGEM  —  {model_name}"
+    c.value     = model_name
     c.font      = Font(bold=True, size=14, name="Calibri", color="FFFFFF")
     c.fill      = PatternFill("solid", fgColor="1F4E79")
     c.alignment = Alignment(horizontal="center", vertical="center")
@@ -695,7 +721,7 @@ def build_preview_html(data: dict) -> str:
   <table class="esc-tbl">
     <thead>
       <tr><td class="esc-title" colspan="{n_cols}">
-        REGRA MOTOR ESCORAGEM &mdash; {_html.escape(model_name)}
+        {_html.escape(model_name)}
       </td></tr>
       <tr><td class="esc-subtitle" colspan="{n_cols}">
         Soma dos Pesos: <strong>{soma_fmt}</strong>

@@ -16,12 +16,12 @@ from exportar_escoragem import (
 )
 
 st.set_page_config(
-    page_title="Motor de Escoragem",
+    page_title="Visualizador e Exportador",
     page_icon=None,
     layout="wide",
 )
 
-st.title("Motor de Escoragem — Visualizador e Exportador")
+st.title("Visualizador e Exportador")
 
 input_mode = st.radio(
     "Fonte dos dados",
