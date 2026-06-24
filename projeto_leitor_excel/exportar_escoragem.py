@@ -17,9 +17,7 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
 
-# ─────────────────────────────────────────────────────────────────────────────
 # Paleta de cores
-# ─────────────────────────────────────────────────────────────────────────────
 
 # Cores de score — Excel
 _XL_RED    = "FF4444"
@@ -61,9 +59,7 @@ _MEDIUM = Side(style="medium", color="1F4E79")
 _BTHIN  = Border(left=_THIN, right=_THIN, top=_THIN, bottom=_THIN)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
 # Helpers de cor
-# ─────────────────────────────────────────────────────────────────────────────
 
 def _font_color_xl(bg: str) -> str:
     """Retorna cor de fonte Excel para o fundo dado."""
@@ -92,9 +88,7 @@ def _score_color_xl(score, max_score) -> str:
     return _XL_GREEN
 
 
-# ─────────────────────────────────────────────────────────────────────────────
 # Utilitarios de texto
-# ─────────────────────────────────────────────────────────────────────────────
 
 _HTML_ENT = {"&gt;=": ">=", "&lt;=": "<=", "&gt;": ">", "&lt;": "<", "&amp;": "&"}
 
@@ -195,9 +189,7 @@ def _clean_var_name(name: str) -> str:
     return name.strip()
 
 
-# ─────────────────────────────────────────────────────────────────────────────
 # Parsing
-# ─────────────────────────────────────────────────────────────────────────────
 
 def _parse_grupos(data: dict) -> List[Dict]:
     result = []
@@ -255,9 +247,7 @@ def _parse_classificacao(data: dict) -> List[Dict]:
     return result
 
 
-# ─────────────────────────────────────────────────────────────────────────────
 # Helpers de celula Excel
-# ─────────────────────────────────────────────────────────────────────────────
 
 def _hdr(cell, text: str, bg: str = "1F4E79", fg: str = "FFFFFF",
          bold: bool = True, rot: int = 0) -> None:
@@ -285,9 +275,7 @@ def _dat(cell, value, bg: str = "", bold: bool = False,
     cell.border    = _BTHIN
 
 
-# ─────────────────────────────────────────────────────────────────────────────
 # Aba EscoreSugerido
-# ─────────────────────────────────────────────────────────────────────────────
 
 def _write_escoragem_sheet(ws, grupos: List[Dict], model_name: str) -> None:
     # Colunas: A=Grupo | B=Variavel | C=Faixa | D=Pontos | E=Pontos Max | F=Peso
@@ -298,7 +286,7 @@ def _write_escoragem_sheet(ws, grupos: List[Dict], model_name: str) -> None:
     soma_pesos   = sum(_peso_to_float(v["peso"]) for g in grupos for v in g["variaveis"])
     total_pontos = soma_pesos * 1000
 
-    # ── Linha 1: Banner ───────────────────────────────────────────────────
+    # Linha 1: Banner
     ws.merge_cells(f"A1:{get_column_letter(_N)}1")
     c = ws["A1"]
     c.value     = model_name
@@ -308,7 +296,7 @@ def _write_escoragem_sheet(ws, grupos: List[Dict], model_name: str) -> None:
     c.border    = Border(bottom=Side(style="medium", color="AAAAAA"))
     ws.row_dimensions[1].height = 40
 
-    # ── Linha 2: Subtítulo com total ──────────────────────────────────────
+    # Linha 2: Subtítulo com total
     ws.merge_cells(f"A2:{get_column_letter(_N)}2")
     s = ws["A2"]
     s.value = (
@@ -321,7 +309,7 @@ def _write_escoragem_sheet(ws, grupos: List[Dict], model_name: str) -> None:
     s.border    = Border(bottom=Side(style="thin", color="B0C8E0"))
     ws.row_dimensions[2].height = 18
 
-    # ── Linha 3: Cabeçalhos ───────────────────────────────────────────────
+    # Linha 3: Cabeçalhos
     hdrs = [
         ("Grupo",               "1F4E79", "FFFFFF"),
         ("Variáveis\nEscore",   "1F4E79", "FFFFFF"),
@@ -334,7 +322,7 @@ def _write_escoragem_sheet(ws, grupos: List[Dict], model_name: str) -> None:
         _hdr(ws.cell(3, col), txt, bg=bg, fg=fg)
     ws.row_dimensions[3].height = 32
 
-    # ── Linhas de dados ───────────────────────────────────────────────────
+    # Linhas de dados
     # Colunas: D=Pontos Faixa | E=Pontos Max | F=Peso
     cur = 4
     row_parity = 0
@@ -387,7 +375,7 @@ def _write_escoragem_sheet(ws, grupos: List[Dict], model_name: str) -> None:
                                   text_rotation=90, wrap_text=False)
         gc.border    = Border(left=_MEDIUM, right=_THIN, top=_MEDIUM, bottom=_MEDIUM)
 
-    # ── Linha de total ────────────────────────────────────────────────────
+    # Linha de total
     total_row = cur
     ws.merge_cells(f"A{total_row}:D{total_row}")
     tc = ws.cell(total_row, 1)
@@ -402,18 +390,16 @@ def _write_escoragem_sheet(ws, grupos: List[Dict], model_name: str) -> None:
          font_color="FFFFFF")
     ws.row_dimensions[total_row].height = 20
 
-    # ── Larguras de coluna ────────────────────────────────────────────────
+    # Larguras de coluna
     for col, w in enumerate([8, 32, 32, 12, 12, 12], 1):
         ws.column_dimensions[get_column_letter(col)].width = w
     ws.freeze_panes = "C4"
 
 
-# ─────────────────────────────────────────────────────────────────────────────
 # Aba Classificacao de Risco  +  secao Limite Sugerido na parte inferior
-# ─────────────────────────────────────────────────────────────────────────────
 
 def _write_classificacao_sheet(ws, classificacao: List[Dict]) -> None:
-    # ── Titulo ────────────────────────────────────────────────────────────
+    # Titulo
     ws.merge_cells("A1:D1")
     c = ws["A1"]
     c.value     = "CLASSIFICACAO DE RISCO"
@@ -421,12 +407,12 @@ def _write_classificacao_sheet(ws, classificacao: List[Dict]) -> None:
     c.alignment = Alignment(horizontal="center", vertical="center")
     ws.row_dimensions[1].height = 36
 
-    # ── Cabecalhos — apenas faixas ────────────────────────────────────────
+    # Cabecalhos — apenas faixas
     for col, hdr in enumerate(["Classe", "Risco", "Faixa de Pontuacao", "Validade"], 1):
         _hdr(ws.cell(2, col), hdr)
     ws.row_dimensions[2].height = 24
 
-    # ── Linhas de classificacao ───────────────────────────────────────────
+    # Linhas de classificacao
     for ri, cls in enumerate(classificacao, 3):
         risco_key = cls["risco"].lower().replace("é", "e")
         bg = _RISK_COLORS_XL.get(risco_key, "FFFFFF")
@@ -438,10 +424,10 @@ def _write_classificacao_sheet(ws, classificacao: List[Dict]) -> None:
 
     last_cls_row = 2 + len(classificacao)
 
-    # ── Espacador ─────────────────────────────────────────────────────────
+    # Espacador
     sep_row = last_cls_row + 2
 
-    # ── Titulo da secao inferior ──────────────────────────────────────────
+    # Titulo da secao inferior
     ws.merge_cells(f"A{sep_row}:D{sep_row}")
     t = ws.cell(sep_row, 1)
     t.value     = "RESUMO — CALCULO DE LIMITE SUGERIDO"
@@ -451,13 +437,13 @@ def _write_classificacao_sheet(ws, classificacao: List[Dict]) -> None:
     t.border    = _BTHIN
     ws.row_dimensions[sep_row].height = 26
 
-    # ── Cabecalhos da secao inferior ──────────────────────────────────────
+    # Cabecalhos da secao inferior
     sub_row = sep_row + 1
     for col, hdr in enumerate(["Classe", "Risco", "Fator de Limite", "Limite Sugerido"], 1):
         _hdr(ws.cell(sub_row, col), hdr, bg="2E75B6")
     ws.row_dimensions[sub_row].height = 22
 
-    # ── Linhas da secao inferior ──────────────────────────────────────────
+    # Linhas da secao inferior
     for i, cls in enumerate(classificacao):
         ri2 = sub_row + 1 + i
         risco_key = cls["risco"].lower().replace("é", "e")
@@ -470,7 +456,7 @@ def _write_classificacao_sheet(ws, classificacao: List[Dict]) -> None:
         _dat(ws.cell(ri2, 4), limite_txt, align="left")
         ws.row_dimensions[ri2].height = 20
 
-    # ── Nota explicativa ──────────────────────────────────────────────────
+    # Nota explicativa
     nota_row = sub_row + 1 + len(classificacao) + 1
     ws.merge_cells(f"A{nota_row}:D{nota_row + 2}")
     nota = ws.cell(nota_row, 1)
@@ -493,14 +479,12 @@ def _write_classificacao_sheet(ws, classificacao: List[Dict]) -> None:
     for r in range(nota_row, nota_row + 3):
         ws.row_dimensions[r].height = 18
 
-    # ── Larguras ──────────────────────────────────────────────────────────
+    # Larguras
     for col, w in enumerate([16, 16, 28, 36], 1):
         ws.column_dimensions[get_column_letter(col)].width = w
 
 
-# ─────────────────────────────────────────────────────────────────────────────
 # Montar workbook
-# ─────────────────────────────────────────────────────────────────────────────
 
 def _build_workbook(data: dict) -> Tuple[str, Workbook]:
     model_name    = data.get("detalhes", "escoragem")
@@ -537,9 +521,7 @@ def export_json_to_excel(json_path: Path, output_dir: Optional[Path] = None) -> 
     return out_path
 
 
-# ─────────────────────────────────────────────────────────────────────────────
 # CSS base compartilhado
-# ─────────────────────────────────────────────────────────────────────────────
 
 _BASE_CSS = """
 <style>
@@ -631,9 +613,7 @@ _BASE_CSS = """
 """
 
 
-# ─────────────────────────────────────────────────────────────────────────────
 # Preview HTML — Variaveis e Regras
-# ─────────────────────────────────────────────────────────────────────────────
 
 def build_preview_html(data: dict) -> str:
     grupos     = _parse_grupos(data)
@@ -736,9 +716,7 @@ def build_preview_html(data: dict) -> str:
 """
 
 
-# ─────────────────────────────────────────────────────────────────────────────
 # Preview HTML — Classificacao (so faixas)
-# ─────────────────────────────────────────────────────────────────────────────
 
 def build_classificacao_html(data: dict) -> str:
     classificacao = _parse_classificacao(data)
@@ -747,7 +725,7 @@ def build_classificacao_html(data: dict) -> str:
     if not classificacao:
         return "<p>Sem dados de classificacao.</p>"
 
-    # ── Tabela 1: faixas de classificação ─────────────────────────────────
+    # Tabela 1: faixas de classificação
     cls_rows = []
     for cls in classificacao:
         risco_key = cls["risco"].lower().replace("é", "e")
@@ -762,7 +740,7 @@ def build_classificacao_html(data: dict) -> str:
             f"</tr>"
         )
 
-    # ── Tabela 2: metodologia de limite sugerido ──────────────────────────
+    # Tabela 2: metodologia de limite sugerido
     has_limite = any(cls["fator"] or cls["limite_sugerido"] for cls in classificacao)
     lim_rows = []
     for cls in classificacao:
@@ -858,9 +836,7 @@ def build_classificacao_html(data: dict) -> str:
 """
 
 
-# ─────────────────────────────────────────────────────────────────────────────
 # CLI
-# ─────────────────────────────────────────────────────────────────────────────
 
 def main() -> None:
     args = sys.argv[1:]
