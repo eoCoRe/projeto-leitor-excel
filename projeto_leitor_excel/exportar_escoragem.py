@@ -180,7 +180,7 @@ def _peso_to_float(peso) -> float:
         return peso
     try:
         v = float(peso)
-        return v / 100.0 if v > 1 else v
+        return v / 100.0 if v >= 1 else v
     except (TypeError, ValueError):
         return 0.0
 
