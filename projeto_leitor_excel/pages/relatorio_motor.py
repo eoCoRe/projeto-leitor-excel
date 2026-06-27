@@ -12,7 +12,6 @@ import streamlit as st
 
 st.set_page_config(page_title="Relatório do Motor", layout="wide")
 
-# Helpers de texto
 
 _HTML_ENT = {"&gt;=": ">=", "&lt;=": "<=", "&gt;": ">", "&lt;": "<", "&amp;": "&"}
 
@@ -56,8 +55,6 @@ def _tiptap_text(doc) -> str:
     return " ".join(parts).strip()
 
 
-# Parser central
-
 def _categorize(componentes: list) -> dict:
     buckets: dict[str, list] = {
         "start": [],
@@ -86,8 +83,6 @@ def _categorize(componentes: list) -> dict:
             buckets["other"].append(comp)
     return buckets
 
-
-# Helpers de exibição
 
 _STATUS_EMOJI = {"reprovar": "🔴", "derivar": "🟡", "aprovar": "🟢"}
 _STATUS_LABEL = {"reprovar": "Reprovar", "derivar": "Derivar", "aprovar": "Aprovar"}
@@ -120,8 +115,6 @@ def _status_card(comp: dict) -> None:
         unsafe_allow_html=True,
     )
 
-
-# UI — Entrada
 
 st.title("Relatório do Motor de Crédito")
 
@@ -161,7 +154,6 @@ if not componentes:
 
 buckets = _categorize(componentes)
 
-# Métricas de topo
 
 c1, c2, c3, c4, c5 = st.columns(5)
 c1.metric("Nós totais", len(componentes))
@@ -172,7 +164,6 @@ c5.metric("Escoragem", len(buckets["scoring"]))
 
 st.divider()
 
-# Abas
 
 tab_sources, tab_status, tab_cond, tab_score, tab_vars, tab_tech = st.tabs([
     f"Fontes de Dados ({len(buckets['etl'])})",
@@ -183,7 +174,6 @@ tab_sources, tab_status, tab_cond, tab_score, tab_vars, tab_tech = st.tabs([
     "Resumo Técnico",
 ])
 
-# Fontes de Dados
 with tab_sources:
     st.subheader("Fontes de Dados Consultadas")
     if not buckets["etl"]:
@@ -214,7 +204,6 @@ with tab_sources:
 
         st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
-# Decisões
 with tab_status:
     st.subheader("Decisões do Motor")
 
@@ -238,7 +227,6 @@ with tab_status:
     _group_status(aprovar_nodes,  "🟢 Aprovações")
     _group_status(reprovar_mid,   "🔴 Reprovações Intermediárias")
 
-# Condicionais
 with tab_cond:
     st.subheader("Regras Condicionais")
     if not buckets["conditional"]:
@@ -252,7 +240,6 @@ with tab_cond:
             tipo_text  = _tiptap_text(d.get("tipo", ""))
             valor_text = _tiptap_text(d.get("valor", ""))
 
-            # Clean label from variable: "Source > FieldName" -> keep as-is
             tipo_clean = tipo_text.replace("[", "").replace("]", "")
             valor_clean = valor_text.replace("[", "").replace("]", "")
 
@@ -265,7 +252,6 @@ with tab_cond:
 
         st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
-# Escoragem
 with tab_score:
     st.subheader("Nós de Escoragem")
     if not buckets["scoring"]:
@@ -326,7 +312,6 @@ with tab_score:
                         hide_index=True,
                     )
 
-# Variáveis
 with tab_vars:
     st.subheader("Nós de Variáveis Customizadas")
     if not buckets["variables"]:
@@ -360,7 +345,6 @@ with tab_vars:
                         hide_index=True,
                     )
 
-# Resumo Técnico
 with tab_tech:
     st.subheader("Resumo Técnico")
 

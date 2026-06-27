@@ -12,20 +12,16 @@ import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
 
-# Paleta de cores
-
-# Cores de score — Excel
 _XL_RED    = "FF4444"
 _XL_YELLOW = "FFFF00"
 _XL_LGREEN = "92D050"
 _XL_GREEN  = "00B050"
 
-# Cores de score — CSS
 _CSS_COLORS = {
     _XL_RED:    "#FF4444",
     _XL_YELLOW: "#FFFF00",
@@ -59,8 +55,6 @@ _MEDIUM = Side(style="medium", color="1F4E79")
 _BTHIN  = Border(left=_THIN, right=_THIN, top=_THIN, bottom=_THIN)
 
 
-# Helpers de cor
-
 def _font_color_xl(bg: str) -> str:
     """Retorna cor de fonte Excel para o fundo dado."""
     return "000000" if bg in _LIGHT_BG_XL else "FFFFFF"
@@ -87,8 +81,6 @@ def _score_color_xl(score, max_score) -> str:
         return _XL_LGREEN
     return _XL_GREEN
 
-
-# Utilitarios de texto
 
 _HTML_ENT = {"&gt;=": ">=", "&lt;=": "<=", "&gt;": ">", "&lt;": "<", "&amp;": "&"}
 
@@ -189,8 +181,6 @@ def _clean_var_name(name: str) -> str:
     return name.strip()
 
 
-# Parsing
-
 def _parse_grupos(data: dict) -> List[Dict]:
     result = []
     for grupo in data.get("grupos", []):
@@ -247,7 +237,187 @@ def _parse_classificacao(data: dict) -> List[Dict]:
     return result
 
 
-# Helpers de celula Excel
+_COND_OPS = r">=|<=|==|!=|>|<"
+
+
+def _parse_value_token(tok: str):
+    tok = tok.strip()
+    try:
+        v = float(tok)
+        return int(v) if v == int(v) else v
+    except ValueError:
+        return tok
+
+
+def _parse_condition_text(text) -> Tuple[Optional[str], object, Optional[str], object]:
+    text = (text or "").strip()
+    if not text:
+        return None, None, None, None
+    if text.lower() == "vazio":
+        return "vazio", None, None, None
+    if text.startswith("= "):
+        return "==", _parse_value_token(text[2:]), None, None
+    m = re.match(rf"^({_COND_OPS})\s*(\S+)\s+e\s+({_COND_OPS})\s*(\S+)$", text)
+    if m:
+        c1, v1, c2, v2 = m.groups()
+        return c1, _parse_value_token(v1), c2, _parse_value_token(v2)
+    m = re.match(rf"^({_COND_OPS})\s*(\S+)$", text)
+    if m:
+        c1, v1 = m.groups()
+        return c1, _parse_value_token(v1), None, None
+    return None, text, None, None
+
+
+def _parse_peso_pct(text) -> float:
+    if text is None:
+        return 0.0
+    s = str(text).strip().replace(",", ".").replace("%", "")
+    try:
+        return float(s) / 100.0
+    except ValueError:
+        return 0.0
+
+
+def _parse_validade_text(text) -> Optional[int]:
+    m = re.match(r"(\d+)", str(text or "").strip())
+    return int(m.group(1)) if m else None
+
+
+def _ffill(values: list) -> list:
+    out, last = [], None
+    for v in values:
+        if v not in (None, ""):
+            last = v
+        out.append(last)
+    return out
+
+
+def _read_grupos_sheet(ws) -> List[Dict]:
+    rows = []
+    for r in range(4, ws.max_row + 1):
+        col_a = ws.cell(r, 1).value
+        if isinstance(col_a, str) and col_a.strip().upper() == "TOTAL":
+            break
+        rows.append({
+            "grupo":  col_a,
+            "var":    ws.cell(r, 2).value,
+            "faixa":  ws.cell(r, 3).value,
+            "pontos": ws.cell(r, 4).value,
+            "max":    ws.cell(r, 5).value,
+            "peso":   ws.cell(r, 6).value,
+        })
+
+    grupo_col = _ffill([row["grupo"] for row in rows])
+    var_col   = _ffill([row["var"]   for row in rows])
+    max_col   = _ffill([row["max"]   for row in rows])
+    peso_col  = _ffill([row["peso"]  for row in rows])
+
+    grupos: Dict[str, Dict] = {}
+    for i, row in enumerate(rows):
+        nome_grupo = grupo_col[i] or ""
+        nome_var   = var_col[i] or ""
+        grupo = grupos.setdefault(nome_grupo, {"nome": nome_grupo, "variaveis": {}})
+        var = grupo["variaveis"].setdefault(nome_var, {
+            "nome": nome_var,
+            "peso": _parse_peso_pct(peso_col[i]),
+            "pontuacao": [],
+        })
+
+        try:
+            pontos_max_v = float(max_col[i]) if max_col[i] not in (None, "") else 0.0
+        except (TypeError, ValueError):
+            pontos_max_v = 0.0
+        try:
+            pf = float(row["pontos"]) if row["pontos"] not in (None, "") else 0.0
+        except (TypeError, ValueError):
+            pf = 0.0
+        pct = round(pf / pontos_max_v * 100, 4) if pontos_max_v else 0.0
+        if pct == int(pct):
+            pct = int(pct)
+
+        c1, v1, c2, v2 = _parse_condition_text(row["faixa"])
+        var["pontuacao"].append({
+            "condicao_1": c1,
+            "pontuacao_1": v1,
+            "condicao_2": c2,
+            "pontuacao_2": v2,
+            "faixa_pontuacao": pct,
+        })
+
+    return [
+        {"nome": g["nome"], "variaveis": list(g["variaveis"].values())}
+        for g in grupos.values()
+    ]
+
+
+def _read_classificacao_sheet(ws) -> List[Dict]:
+    cls_rows = []
+    for r in range(3, ws.max_row + 1):
+        classe = ws.cell(r, 1).value
+        if classe in (None, ""):
+            break
+        cls_rows.append({
+            "classe":   classe,
+            "risco":    ws.cell(r, 2).value,
+            "faixa":    ws.cell(r, 3).value,
+            "validade": ws.cell(r, 4).value,
+        })
+
+    sep_row = None
+    for r in range(1, ws.max_row + 1):
+        v = ws.cell(r, 1).value
+        if isinstance(v, str) and "RESUMO" in v.upper():
+            sep_row = r
+            break
+
+    extras: Dict[object, Dict] = {}
+    if sep_row:
+        for r in range(sep_row + 2, ws.max_row + 1):
+            classe = ws.cell(r, 1).value
+            if classe in (None, ""):
+                break
+            extras[classe] = {
+                "fator":  ws.cell(r, 3).value,
+                "limite": ws.cell(r, 4).value,
+            }
+
+    result = []
+    for row in cls_rows:
+        c1, v1, c2, v2 = _parse_condition_text(row["faixa"])
+        extra = extras.get(row["classe"], {})
+        fator = extra.get("fator")
+        limite_txt = extra.get("limite")
+        if isinstance(limite_txt, str) and limite_txt.strip().lower() == "fator x capacidade de pagamento":
+            limite_txt = ""
+        result.append({
+            "classe":          row["classe"],
+            "risco":           row["risco"],
+            "condicao_1":      c1,
+            "pontuacao_1":     v1,
+            "condicao_2":      c2,
+            "pontuacao_2":     v2,
+            "faixa_pontuacao": _parse_value_token(str(fator)) if fator not in (None, "", "—") else "",
+            "validade_limite": _parse_validade_text(row["validade"]),
+            "limite_sugerido": limite_txt or "",
+        })
+    return result
+
+
+def import_excel_to_json(file_bytes: bytes) -> dict:
+    wb = load_workbook(io.BytesIO(file_bytes), data_only=True)
+    if "EscoreSugerido" not in wb.sheetnames:
+        raise ValueError("Aba 'EscoreSugerido' não encontrada na planilha.")
+
+    ws_score   = wb["EscoreSugerido"]
+    model_name = ws_score["A1"].value or ""
+    grupos     = _read_grupos_sheet(ws_score)
+
+    classificacao = []
+    if "Classificacao de Risco" in wb.sheetnames:
+        classificacao = _read_classificacao_sheet(wb["Classificacao de Risco"])
+
+    return {"detalhes": model_name, "grupos": grupos, "classificacao": classificacao}
+
 
 def _hdr(cell, text: str, bg: str = "1F4E79", fg: str = "FFFFFF",
          bold: bool = True, rot: int = 0) -> None:
@@ -275,10 +445,7 @@ def _dat(cell, value, bg: str = "", bold: bool = False,
     cell.border    = _BTHIN
 
 
-# Aba EscoreSugerido
-
 def _write_escoragem_sheet(ws, grupos: List[Dict], model_name: str) -> None:
-    # Colunas: A=Grupo | B=Variavel | C=Faixa | D=Pontos | E=Pontos Max | F=Peso
     _N = 6
     _ALT_BG = "EBF3FA"   # azul muito claro para linhas alternadas
     _SEP_BG = "D6E4F0"   # azul claro para subtítulo
@@ -286,7 +453,6 @@ def _write_escoragem_sheet(ws, grupos: List[Dict], model_name: str) -> None:
     soma_pesos   = sum(_peso_to_float(v["peso"]) for g in grupos for v in g["variaveis"])
     total_pontos = soma_pesos * 1000
 
-    # Linha 1: Banner
     ws.merge_cells(f"A1:{get_column_letter(_N)}1")
     c = ws["A1"]
     c.value     = model_name
@@ -296,7 +462,6 @@ def _write_escoragem_sheet(ws, grupos: List[Dict], model_name: str) -> None:
     c.border    = Border(bottom=Side(style="medium", color="AAAAAA"))
     ws.row_dimensions[1].height = 40
 
-    # Linha 2: Subtítulo com total
     ws.merge_cells(f"A2:{get_column_letter(_N)}2")
     s = ws["A2"]
     s.value = (
@@ -309,7 +474,6 @@ def _write_escoragem_sheet(ws, grupos: List[Dict], model_name: str) -> None:
     s.border    = Border(bottom=Side(style="thin", color="B0C8E0"))
     ws.row_dimensions[2].height = 18
 
-    # Linha 3: Cabeçalhos
     hdrs = [
         ("Grupo",               "1F4E79", "FFFFFF"),
         ("Variáveis\nEscore",   "1F4E79", "FFFFFF"),
@@ -322,8 +486,6 @@ def _write_escoragem_sheet(ws, grupos: List[Dict], model_name: str) -> None:
         _hdr(ws.cell(3, col), txt, bg=bg, fg=fg)
     ws.row_dimensions[3].height = 32
 
-    # Linhas de dados
-    # Colunas: D=Pontos Faixa | E=Pontos Max | F=Peso
     cur = 4
     row_parity = 0
 
@@ -353,7 +515,6 @@ def _write_escoragem_sheet(ws, grupos: List[Dict], model_name: str) -> None:
                 cur += 1
 
             v_end = cur - 1
-            # Mescla B, E e F por variável
             for col in (2, 5, 6):
                 if v_end > v_start:
                     ws.merge_cells(
@@ -375,7 +536,6 @@ def _write_escoragem_sheet(ws, grupos: List[Dict], model_name: str) -> None:
                                   text_rotation=90, wrap_text=False)
         gc.border    = Border(left=_MEDIUM, right=_THIN, top=_MEDIUM, bottom=_MEDIUM)
 
-    # Linha de total
     total_row = cur
     ws.merge_cells(f"A{total_row}:D{total_row}")
     tc = ws.cell(total_row, 1)
@@ -390,16 +550,12 @@ def _write_escoragem_sheet(ws, grupos: List[Dict], model_name: str) -> None:
          font_color="FFFFFF")
     ws.row_dimensions[total_row].height = 20
 
-    # Larguras de coluna
     for col, w in enumerate([8, 32, 32, 12, 12, 12], 1):
         ws.column_dimensions[get_column_letter(col)].width = w
     ws.freeze_panes = "C4"
 
 
-# Aba Classificacao de Risco  +  secao Limite Sugerido na parte inferior
-
 def _write_classificacao_sheet(ws, classificacao: List[Dict]) -> None:
-    # Titulo
     ws.merge_cells("A1:D1")
     c = ws["A1"]
     c.value     = "CLASSIFICACAO DE RISCO"
@@ -407,12 +563,10 @@ def _write_classificacao_sheet(ws, classificacao: List[Dict]) -> None:
     c.alignment = Alignment(horizontal="center", vertical="center")
     ws.row_dimensions[1].height = 36
 
-    # Cabecalhos — apenas faixas
     for col, hdr in enumerate(["Classe", "Risco", "Faixa de Pontuacao", "Validade"], 1):
         _hdr(ws.cell(2, col), hdr)
     ws.row_dimensions[2].height = 24
 
-    # Linhas de classificacao
     for ri, cls in enumerate(classificacao, 3):
         risco_key = cls["risco"].lower().replace("é", "e")
         bg = _RISK_COLORS_XL.get(risco_key, "FFFFFF")
@@ -424,10 +578,8 @@ def _write_classificacao_sheet(ws, classificacao: List[Dict]) -> None:
 
     last_cls_row = 2 + len(classificacao)
 
-    # Espacador
     sep_row = last_cls_row + 2
 
-    # Titulo da secao inferior
     ws.merge_cells(f"A{sep_row}:D{sep_row}")
     t = ws.cell(sep_row, 1)
     t.value     = "RESUMO — CALCULO DE LIMITE SUGERIDO"
@@ -437,13 +589,11 @@ def _write_classificacao_sheet(ws, classificacao: List[Dict]) -> None:
     t.border    = _BTHIN
     ws.row_dimensions[sep_row].height = 26
 
-    # Cabecalhos da secao inferior
     sub_row = sep_row + 1
     for col, hdr in enumerate(["Classe", "Risco", "Fator de Limite", "Limite Sugerido"], 1):
         _hdr(ws.cell(sub_row, col), hdr, bg="2E75B6")
     ws.row_dimensions[sub_row].height = 22
 
-    # Linhas da secao inferior
     for i, cls in enumerate(classificacao):
         ri2 = sub_row + 1 + i
         risco_key = cls["risco"].lower().replace("é", "e")
@@ -451,12 +601,10 @@ def _write_classificacao_sheet(ws, classificacao: List[Dict]) -> None:
         _dat(ws.cell(ri2, 1), cls["classe"],          bg=bg, bold=True)
         _dat(ws.cell(ri2, 2), cls["risco"],           bg=bg)
         _dat(ws.cell(ri2, 3), cls["fator"],           align="center")
-        # Se limite_sugerido estiver no JSON usa; senao mostra formula generica
         limite_txt = cls["limite_sugerido"] if cls["limite_sugerido"] else "Fator x Capacidade de Pagamento"
         _dat(ws.cell(ri2, 4), limite_txt, align="left")
         ws.row_dimensions[ri2].height = 20
 
-    # Nota explicativa
     nota_row = sub_row + 1 + len(classificacao) + 1
     ws.merge_cells(f"A{nota_row}:D{nota_row + 2}")
     nota = ws.cell(nota_row, 1)
@@ -479,12 +627,9 @@ def _write_classificacao_sheet(ws, classificacao: List[Dict]) -> None:
     for r in range(nota_row, nota_row + 3):
         ws.row_dimensions[r].height = 18
 
-    # Larguras
     for col, w in enumerate([16, 16, 28, 36], 1):
         ws.column_dimensions[get_column_letter(col)].width = w
 
-
-# Montar workbook
 
 def _build_workbook(data: dict) -> Tuple[str, Workbook]:
     model_name    = data.get("detalhes", "escoragem")
@@ -520,8 +665,6 @@ def export_json_to_excel(json_path: Path, output_dir: Optional[Path] = None) -> 
     print(f"Exportado: {out_path}")
     return out_path
 
-
-# CSS base compartilhado
 
 _BASE_CSS = """
 <style>
@@ -609,11 +752,13 @@ _BASE_CSS = """
   .esc-tbl tbody tr:nth-child(even) td:not([style*="background"]) {
     background: #F7F9FC;
   }
+  /* Separa visualmente um grupo do próximo */
+  .esc-tbl tbody tr.group-end td {
+    border-bottom: 3px solid #1F4E79;
+  }
 </style>
 """
 
-
-# Preview HTML — Variaveis e Regras
 
 def build_preview_html(data: dict) -> str:
     grupos     = _parse_grupos(data)
@@ -637,8 +782,9 @@ def build_preview_html(data: dict) -> str:
 
     rows = []
     for grupo in grupos:
-        g_total = sum(len(v["pontuacoes"]) for v in grupo["variaveis"])
-        g_done  = False
+        g_total   = sum(len(v["pontuacoes"]) for v in grupo["variaveis"])
+        g_done    = False
+        g_emitted = 0
 
         for var in grupo["variaveis"]:
             v_cnt        = len(var["pontuacoes"])
@@ -662,7 +808,9 @@ def build_preview_html(data: dict) -> str:
                 except (TypeError, ValueError):
                     bg_c, fc, ptxt, sdsp, pftxt = "#FFFFFF", "#000000", "", str(score), ""
 
-                r = "<tr>"
+                g_emitted += 1
+                row_class = ' class="group-end"' if g_emitted == g_total else ""
+                r = f"<tr{row_class}>"
                 if not g_done:
                     r += f'<td class="esc-grupo" rowspan="{g_total}">{_html.escape(grupo["nome"])}</td>'
                     g_done = True
@@ -716,8 +864,6 @@ def build_preview_html(data: dict) -> str:
 """
 
 
-# Preview HTML — Classificacao (so faixas)
-
 def build_classificacao_html(data: dict) -> str:
     classificacao = _parse_classificacao(data)
     model_name    = data.get("detalhes", "Escoragem")
@@ -725,7 +871,6 @@ def build_classificacao_html(data: dict) -> str:
     if not classificacao:
         return "<p>Sem dados de classificacao.</p>"
 
-    # Tabela 1: faixas de classificação
     cls_rows = []
     for cls in classificacao:
         risco_key = cls["risco"].lower().replace("é", "e")
@@ -740,7 +885,6 @@ def build_classificacao_html(data: dict) -> str:
             f"</tr>"
         )
 
-    # Tabela 2: metodologia de limite sugerido
     has_limite = any(cls["fator"] or cls["limite_sugerido"] for cls in classificacao)
     lim_rows = []
     for cls in classificacao:
@@ -835,8 +979,6 @@ def build_classificacao_html(data: dict) -> str:
 {limite_section}
 """
 
-
-# CLI
 
 def main() -> None:
     args = sys.argv[1:]
