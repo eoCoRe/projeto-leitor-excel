@@ -6,6 +6,7 @@ resumo estruturado: fontes de dados, decisões, condicionais, escoragem e variá
 
 import html as _html
 import json
+import re
 
 import pandas as pd
 import streamlit as st
@@ -25,6 +26,10 @@ def _decode(text) -> str:
     for k, v in _HTML_ENT.items():
         text = text.replace(k, v)
     return text
+
+
+def _safe_filename(text: str) -> str:
+    return re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", text).strip() or "escoragem"
 
 
 def _tiptap_text(doc) -> str:
@@ -337,6 +342,22 @@ with tab_score:
                         use_container_width=True,
                         hide_index=True,
                     )
+
+                st.divider()
+                export_data = {
+                    "detalhes": esc.get("detalhes", detalhes or label),
+                    "grupos": esc.get("grupos", []),
+                    "classificacao": esc.get("classificacao", []),
+                    "variavel_especifica": esc.get("variavel_especifica", {}),
+                }
+                st.download_button(
+                    label="⬇️ Baixar JSON da Escoragem",
+                    data=json.dumps(export_data, ensure_ascii=False, indent=2).encode("utf-8"),
+                    file_name=f"ESCORAGEM-{_safe_filename(label or detalhes)}.json",
+                    mime="application/json",
+                    key=f"dl_esc_json_{idx}",
+                    use_container_width=True,
+                )
 
 # ── Variáveis ────────────────────────────────────────────────────────────────────
 with tab_vars:
