@@ -13,6 +13,8 @@ from exportar_escoragem import (
     build_classificacao_html,
     build_preview_html,
     export_to_bytes,
+    import_excel_to_json,
+    safe_filename,
 )
 
 st.set_page_config(
@@ -62,17 +64,17 @@ st.title("Visualizador e Exportador")
 
 input_mode = st.radio(
     "Fonte dos dados",
-    ["Upload de arquivo", "Colar JSON"],
+    ["Upload de arquivo JSON", "Colar JSON", "Upload de planilha (Excel)"],
     horizontal=True,
 )
 
 json_bytes: bytes | None = None
 
-if input_mode == "Upload de arquivo":
+if input_mode == "Upload de arquivo JSON":
     uploaded = st.file_uploader("Selecione o arquivo JSON de escoragem", type=["json"])
     if uploaded:
         json_bytes = uploaded.read()
-else:
+elif input_mode == "Colar JSON":
     pasted = st.text_area(
         "Cole o conteúdo JSON aqui",
         height=200,
@@ -80,6 +82,18 @@ else:
     )
     if pasted and pasted.strip():
         json_bytes = pasted.encode("utf-8")
+else:
+    uploaded = st.file_uploader(
+        "Selecione a planilha (.xlsx) preenchida pelo cliente",
+        type=["xlsx"],
+    )
+    if uploaded:
+        try:
+            data_from_excel = import_excel_to_json(uploaded.read())
+            json_bytes = json.dumps(data_from_excel, ensure_ascii=False).encode("utf-8")
+        except Exception as e:
+            st.error(f"Erro ao ler a planilha: {e}")
+            st.stop()
 
 if json_bytes:
     try:
@@ -132,3 +146,12 @@ if json_bytes:
     except Exception as e:
         st.error(f"Erro ao gerar Excel: {e}")
         st.exception(e)
+
+    if input_mode == "Upload de planilha (Excel)":
+        st.download_button(
+            label="Baixar JSON atualizado",
+            data=json_bytes,
+            file_name=safe_filename(model_name) + ".json",
+            mime="application/json",
+            use_container_width=True,
+        )
