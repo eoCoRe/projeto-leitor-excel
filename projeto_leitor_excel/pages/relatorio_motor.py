@@ -747,7 +747,25 @@ with tab_score:
             with st.expander(title, expanded=(idx == 0)):
                 esc = d.get("escoragem", {})
                 grupos = esc.get("grupos", [])
-                for gidx, grupo in enumerate(grupos):
+
+                esc_nome = esc.get("detalhes") or detalhes or label
+                esc_export = {
+                    "detalhes": esc_nome,
+                    "grupos": grupos,
+                    "classificacao": esc.get("classificacao", []),
+                    "variavel_especifica": esc.get("variavel_especifica", {}),
+                }
+                st.download_button(
+                    label="⬇️ Baixar escoragem completa (JSON)",
+                    data=json.dumps(esc_export, ensure_ascii=False, indent=2).encode("utf-8"),
+                    file_name=f"ESCORAGEM-{_safe_filename(esc_nome)}.json",
+                    mime="application/json",
+                    key=f"dl_esc_json_{idx}",
+                    use_container_width=True,
+                )
+                st.write("")
+
+                for grupo in grupos:
                     st.markdown(f"**Grupo: {grupo.get('nome', '')}**")
                     variaveis = grupo.get("variaveis", [])
                     var_rows = []
@@ -773,22 +791,6 @@ with tab_score:
                             use_container_width=True,
                             hide_index=True,
                         )
-
-                    grupo_nome = grupo.get("nome", f"Grupo {gidx + 1}")
-                    grupo_export = {
-                        "detalhes": grupo_nome,
-                        "grupos": [grupo],
-                        "classificacao": esc.get("classificacao", []),
-                        "variavel_especifica": esc.get("variavel_especifica", {}),
-                    }
-                    st.download_button(
-                        label=f"⬇️ Baixar JSON — {grupo_nome}",
-                        data=json.dumps(grupo_export, ensure_ascii=False, indent=2).encode("utf-8"),
-                        file_name=f"ESCORAGEM-{_safe_filename(grupo_nome)}.json",
-                        mime="application/json",
-                        key=f"dl_esc_json_{idx}_{gidx}",
-                    )
-                    st.write("")
 
                 classificacao = esc.get("classificacao", [])
                 if classificacao:
