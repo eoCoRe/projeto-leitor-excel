@@ -1,11 +1,16 @@
-"""
+﻿"""
 Scan do Motor
-Valida os nos de escoragem (escoragemNode / escoragemNodeV2) de um motor de
-credito completo: soma de pesos, pontuacao maxima, variaveis quebradas,
+Valida a estrutura completa de um motor de credito: nos desconectados do
+fluxo, ramos de condicional/switch sem ligacao, status intermediario sem
+continuacao, referencias de variavel para nos inexistentes ou variaveis nao
+declaradas, e variaveis usadas antes de terem sido calculadas em algum
+caminho do fluxo. Alem disso, valida os nos de escoragem (escoragemNode /
+escoragemNodeV2): soma de pesos, pontuacao maxima, variaveis quebradas,
 formato antigo e cobertura da classificacao de risco.
 """
 
 import json
+from collections import defaultdict, deque
 
 import pandas as pd
 import streamlit as st
@@ -126,6 +131,220 @@ def _scan_classificacao(classificacao_raw: list) -> list:
     return issues
 
 
+_SENTINEL_WORKFLOW_IDS = {"options", "default"}
+
+
+def _build_graph(componentes: list) -> tuple:
+    """Indexa os nos por id e as ligacoes de saida (fonte de verdade do fluxo
+    -- `ligacoes.entrada` no JSON do motor e auto-referente/inconsistente e
+    nao deve ser usado)."""
+    nodes_by_id = {c["id"]: c for c in componentes if c.get("id")}
+    out_edges: dict = defaultdict(list)
+    for c in componentes:
+        cid = c.get("id")
+        for e in c.get("ligacoes", {}).get("saida", []):
+            tgt = e.get("target")
+            if tgt:
+                out_edges[cid].append((e.get("sourceHandle"), tgt))
+    return nodes_by_id, out_edges
+
+
+def _reachable_from(start_ids: list, out_edges: dict) -> set:
+    seen = set(start_ids)
+    fila = deque(start_ids)
+    while fila:
+        cur = fila.popleft()
+        for _, tgt in out_edges.get(cur, []):
+            if tgt not in seen:
+                seen.add(tgt)
+                fila.append(tgt)
+    return seen
+
+
+def _build_in_edges_index(out_edges: dict) -> dict:
+    idx: dict = defaultdict(set)
+    for src, edges in out_edges.items():
+        for _, tgt in edges:
+            idx[tgt].add(src)
+    return idx
+
+
+def _ancestors_of(node_id: str, in_edges_index: dict) -> set:
+    """Todos os nos que possuem algum caminho no fluxo ate `node_id`."""
+    seen: set = set()
+    fila = deque([node_id])
+    while fila:
+        cur = fila.popleft()
+        for src in in_edges_index.get(cur, []):
+            if src not in seen:
+                seen.add(src)
+                fila.append(src)
+    return seen
+
+
+def _walk_variable_refs(node):
+    """Percorre recursivamente um bloco `data` de componente e retorna os
+    `attrs` de cada `variableComponent` encontrado (referencias a variaveis
+    de outros nos, em condicionais, formulas, mensagens etc.)."""
+    if isinstance(node, dict):
+        if node.get("type") == "variableComponent":
+            attrs = node.get("attrs", {})
+            if attrs:
+                yield attrs
+        for v in node.values():
+            yield from _walk_variable_refs(v)
+    elif isinstance(node, list):
+        for item in node:
+            yield from _walk_variable_refs(item)
+
+
+def _declared_vars_of_variaveis_node(comp: dict) -> set:
+    return {
+        f"variable_{var['nome_variavel']}"
+        for var in comp.get("data", {}).get("variaveis", [])
+        if var.get("nome_variavel")
+    }
+
+
+def _comp_label(comp: dict) -> str:
+    d = comp.get("data", {})
+    return d.get("detalhes") or d.get("label") or comp.get("id", "—")
+
+
+def _scan_estrutura_motor(componentes: list) -> list:
+    """Valida o grafo do motor inteiro (todos os tipos de no, nao so
+    escoragem): nos soltos/desconectados, ramos de condicional/switch sem
+    ligacao, status intermediario sem continuacao, referencias de variavel
+    para nos que nao existem mais, variaveis customizadas nao declaradas no
+    no de origem, e variaveis referenciadas antes de terem sido calculadas
+    em qualquer caminho possivel do fluxo."""
+    issues = []
+
+    def add(nivel, categoria, comp_id, comp_label, detalhe):
+        issues.append({
+            "nivel": nivel, "categoria": categoria,
+            "id": comp_id, "no": comp_label, "detalhe": detalhe,
+        })
+
+    nodes_by_id, out_edges = _build_graph(componentes)
+    in_edges_index = _build_in_edges_index(out_edges)
+    start_ids = [c["id"] for c in componentes if c.get("type") == "startNode"]
+    reachable = _reachable_from(start_ids, out_edges)
+
+    # Nos desconectados do fluxo (nenhum caminho a partir do Inicio chega neles)
+    for c in componentes:
+        cid = c.get("id")
+        if cid in start_ids or cid in reachable:
+            continue
+        label = _comp_label(c)
+        add("erro", "Nó desconectado", cid, label,
+            f'Nó "{label}" ({c.get("type")}) não é alcançável a partir do Início — '
+            "nenhuma ligação de outro nó chega até ele.")
+
+    # Ramos de condicional (se-sim / se-nao) sem ligacao de saida
+    for c in componentes:
+        if "condicional" not in c.get("type", "").lower():
+            continue
+        cid = c.get("id")
+        label = _comp_label(c)
+        handles = {h for h, _ in out_edges.get(cid, [])}
+        for esperado in ("se-sim", "se-nao"):
+            if esperado not in handles:
+                add("erro", "Ramo de condicional sem conexão", cid, label,
+                    f'Condicional "{label}": ramo "{esperado}" não tem nenhuma ligação de saída.')
+
+    # switchNode: cases sem ligacao, e ausencia de caminho default
+    for c in componentes:
+        if c.get("type") != "switchNode":
+            continue
+        cid = c.get("id")
+        label = _comp_label(c)
+        handles = {h for h, _ in out_edges.get(cid, [])}
+        for case in c.get("data", {}).get("cases", []):
+            case_id = case.get("id")
+            if case_id not in handles:
+                add("erro", "Case de switch sem conexão", cid, label,
+                    f'Switch "{label}": case "{case.get("name", case_id)}" não tem nenhuma ligação de saída.')
+        if "default" not in handles:
+            add("aviso", "Switch sem caminho default", cid, label,
+                f'Switch "{label}": não há ligação para o caso "default" — '
+                "se nenhum case corresponder em tempo de execução, o fluxo fica sem destino.")
+
+    # Status intermediario (final != true) sem nenhuma ligacao de saida
+    for c in componentes:
+        if c.get("type") not in ("statusNode", "statusNodeV2"):
+            continue
+        cid = c.get("id")
+        d = c.get("data", {})
+        if d.get("final") or out_edges.get(cid):
+            continue
+        add("erro", "Status intermediário sem continuação", cid, _comp_label(c),
+            f'Status (status="{d.get("status")}") não está marcado como final e não tem '
+            "nenhuma ligação de saída — o fluxo terminaria implicitamente, sem desfecho formal.")
+
+    # Referencias de variavel: no de origem inexistente / variavel nao declarada / usada antes de calculada
+    ancestors_cache: dict = {}
+
+    def ancestors(node_id):
+        if node_id not in ancestors_cache:
+            ancestors_cache[node_id] = _ancestors_of(node_id, in_edges_index)
+        return ancestors_cache[node_id]
+
+    vistos = set()
+    for c in componentes:
+        cid = c.get("id")
+        label = _comp_label(c)
+        for attrs in _walk_variable_refs(c.get("data", {})):
+            nwid = attrs.get("nodeWorkflowId")
+            nwtype = attrs.get("nodeWorkflowType")
+            varid = attrs.get("variableId")
+            content = attrs.get("content")
+            if not nwid or nwid in _SENTINEL_WORKFLOW_IDS:
+                continue
+
+            chave = (cid, nwid, varid)
+            if chave in vistos:
+                continue
+            vistos.add(chave)
+
+            producer = nodes_by_id.get(nwid)
+            if producer is None:
+                add("erro", "Referência a nó inexistente", cid, label,
+                    f'Referência "{content}" aponta para um nó ({nwtype}) que não existe mais '
+                    "entre os componentes do motor — provavelmente removido ou renomeado.")
+                continue
+
+            if nwtype == "variaveisNode" and varid not in _declared_vars_of_variaveis_node(producer):
+                add("erro", "Variável não declarada", cid, label,
+                    f'Referência "{content}" espera a variável "{varid}" no nó de Variáveis '
+                    f'"{_comp_label(producer)}", mas esse nó não declara mais essa variável '
+                    "(renomeada ou removida).")
+
+            if nwid != cid and cid in reachable and nwid not in ancestors(cid):
+                add("erro", "Variável usada antes de calculada", cid, label,
+                    f'Referência "{content}" depende do nó "{_comp_label(producer)}" ({nwtype}), '
+                    "mas esse nó não está em nenhum caminho do fluxo que leve até aqui — "
+                    "a variável nunca teria sido calculada quando este nó executa.")
+
+    # Nomes de variavel customizada duplicados entre nos de Variaveis diferentes
+    donos: dict = defaultdict(list)
+    for c in componentes:
+        if c.get("type") != "variaveisNode":
+            continue
+        for var in c.get("data", {}).get("variaveis", []):
+            nv = var.get("nome_variavel")
+            if nv:
+                donos[nv].append((c.get("id"), _comp_label(c)))
+    for nv, lista in donos.items():
+        if len(lista) > 1:
+            nomes = ", ".join(f'"{lbl}"' for _, lbl in lista)
+            add("aviso", "Nome de variável duplicado", lista[0][0], nv,
+                f'A variável customizada "{nv}" é declarada em mais de um nó de Variáveis: {nomes}. '
+                "As referências usam o nó de origem para desambiguar, mas isso é um risco de confusão/copy-paste.")
+
+    return issues
+
+
 def _scan_node(comp: dict) -> dict:
     d = comp.get("data", {})
     esc = d.get("escoragem", {})
@@ -236,8 +455,9 @@ def _node_label(scan: dict) -> str:
 
 st.title("Scan do Motor")
 st.caption(
-    "Valida os nós de escoragem do motor: soma de pesos, pontuação máxima, "
-    "variáveis quebradas, formato antigo e cobertura da classificação de risco."
+    "Valida a estrutura completa do motor (nós desconectados, ramos de condicional/switch "
+    "sem ligação, referências de variável quebradas ou fora de ordem) e os nós de escoragem "
+    "(soma de pesos, pontuação máxima, variáveis quebradas, formato antigo, classificação de risco)."
 )
 
 input_mode = st.radio("Origem do JSON", ["Colar JSON", "Upload de arquivo"], horizontal=True)
@@ -271,10 +491,57 @@ if not componentes:
     st.warning("Nenhum componente encontrado em `estrutura_motor.componentes`.")
     st.stop()
 
+st.subheader("Validação Estrutural do Motor")
+st.caption(
+    "Analisa TODOS os nós do motor (condicionais, switch, status, ETL, variáveis, escoragem) "
+    "seguindo as ligações reais do fluxo — não só os nós de escoragem."
+)
+
+estrutura_issues = _scan_estrutura_motor(componentes)
+n_estrutura_err = sum(1 for i in estrutura_issues if i["nivel"] == "erro")
+n_estrutura_warn = sum(1 for i in estrutura_issues if i["nivel"] == "aviso")
+
+e1, e2, e3 = st.columns(3)
+e1.metric("Nós no motor", len(componentes))
+e2.metric("Erros estruturais", n_estrutura_err)
+e3.metric("Avisos estruturais", n_estrutura_warn)
+
+if not estrutura_issues:
+    st.success("Nenhuma pendência estrutural encontrada: todo nó é alcançável a partir do Início, "
+               "todo ramo de condicional/switch está conectado, e toda referência de variável "
+               "aponta para um nó existente que já teria executado antes.")
+else:
+    estrutura_por_categoria: dict = {}
+    for issue in estrutura_issues:
+        estrutura_por_categoria.setdefault(issue["categoria"], []).append(issue)
+    for categoria, issues_cat in estrutura_por_categoria.items():
+        nivel = "error" if any(i["nivel"] == "erro" for i in issues_cat) else "warning"
+        getattr(st, nivel)(f"**{categoria}** — {len(issues_cat)} ocorrência(s)")
+        st.dataframe(
+            pd.DataFrame([
+                {"Nível": i["nivel"].capitalize(), "Nó": i["no"], "Detalhe": i["detalhe"]}
+                for i in issues_cat
+            ]),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+st.caption(
+    "\"Variável usada antes de calculada\" e \"nó desconectado\" seguem apenas as ligações "
+    "declaradas em `ligacoes.saida` — o campo `ligacoes.entrada` do motor é auto-referente e "
+    "não é usado para essa checagem. \"Variável não declarada\" só cobre nós de Variáveis "
+    "customizadas (dado interno ao motor); campos vindos de nós ETL não são validados aqui, "
+    "pois seu schema vem de uma API externa que não está no JSON do motor."
+)
+
+st.divider()
+
 nos_escoragem = [c for c in componentes if c.get("type") in ("escoragemNode", "escoragemNodeV2")]
 if not nos_escoragem:
     st.info("Nenhum nó de escoragem encontrado neste motor.")
     st.stop()
+
+st.subheader("Validação de Escoragem")
 
 scans = [_scan_node(c) for c in nos_escoragem]
 
