@@ -211,6 +211,18 @@ def _comp_label(comp: dict) -> str:
     return d.get("detalhes") or d.get("label") or comp.get("id", "—")
 
 
+def _ref_label(attrs: dict) -> str:
+    """Nome legivel de uma referencia de variavel (para exibicao), preferindo
+    o `label` humano ao token bruto `{{...}}`."""
+    label = _decode(attrs.get("label") or "").strip()
+    if label:
+        return label
+    content = attrs.get("content")
+    if content:
+        return _decode(content)
+    return attrs.get("variableId") or "variável"
+
+
 def _scan_estrutura_motor(componentes: list) -> list:
     """Valida o grafo do motor inteiro (todos os tipos de no, nao so
     escoragem): nos soltos/desconectados, ramos de condicional/switch sem
@@ -298,7 +310,6 @@ def _scan_estrutura_motor(componentes: list) -> list:
             nwid = attrs.get("nodeWorkflowId")
             nwtype = attrs.get("nodeWorkflowType")
             varid = attrs.get("variableId")
-            content = attrs.get("content")
             if not nwid or nwid in _SENTINEL_WORKFLOW_IDS:
                 continue
 
@@ -307,24 +318,25 @@ def _scan_estrutura_motor(componentes: list) -> list:
                 continue
             vistos.add(chave)
 
+            ref_label = _ref_label(attrs)
+
             producer = nodes_by_id.get(nwid)
             if producer is None:
                 add("erro", "Referência a nó inexistente", cid, label,
-                    f'Referência "{content}" aponta para um nó ({nwtype}) que não existe mais '
-                    "entre os componentes do motor — provavelmente removido ou renomeado.")
+                    f'Variável "{ref_label}" está quebrada: o nó de onde ela vinha não existe mais '
+                    "no motor (removido ou renomeado).")
                 continue
 
             if nwtype == "variaveisNode" and varid not in _declared_vars_of_variaveis_node(producer):
                 add("erro", "Variável não declarada", cid, label,
-                    f'Referência "{content}" espera a variável "{varid}" no nó de Variáveis '
-                    f'"{_comp_label(producer)}", mas esse nó não declara mais essa variável '
-                    "(renomeada ou removida).")
+                    f'Variável "{ref_label}" está quebrada: o nó de Variáveis "{_comp_label(producer)}" '
+                    "não declara mais essa variável (foi renomeada ou removida lá).")
 
             if nwid != cid and cid in reachable and nwid not in ancestors(cid):
                 add("erro", "Variável usada antes de calculada", cid, label,
-                    f'Referência "{content}" depende do nó "{_comp_label(producer)}" ({nwtype}), '
-                    "mas esse nó não está em nenhum caminho do fluxo que leve até aqui — "
-                    "a variável nunca teria sido calculada quando este nó executa.")
+                    f'Variável "{ref_label}" está fora de ordem: depende do nó "{_comp_label(producer)}", '
+                    "que não é alcançado em nenhum caminho do fluxo antes deste ponto — a variável "
+                    "nunca teria sido calculada quando este nó executa.")
 
     # Nomes de variavel customizada duplicados entre nos de Variaveis diferentes
     donos: dict = defaultdict(list)
