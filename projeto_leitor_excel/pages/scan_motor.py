@@ -10,39 +10,27 @@ formato antigo e cobertura da classificacao de risco.
 """
 
 import json
-from collections import defaultdict, deque
+from collections import defaultdict
 
 import pandas as pd
 import streamlit as st
 
 from exportar_escoragem import _fmt_num, _parse_classificacao, _parse_grupos, _peso_to_float
+from motor_graph import (
+    SENTINEL_WORKFLOW_IDS as _SENTINEL_WORKFLOW_IDS,
+    ancestors_of as _ancestors_of,
+    build_graph as _build_graph,
+    build_in_edges_index as _build_in_edges_index,
+    comp_label as _comp_label,
+    declared_vars_of_variaveis_node as _declared_vars_of_variaveis_node,
+    decode as _decode,
+    fix_mojibake as _fix_mojibake,
+    reachable_from as _reachable_from,
+    ref_label as _ref_label,
+    walk_variable_refs as _walk_variable_refs,
+)
 
 st.set_page_config(page_title="Scan do Motor", layout="wide")
-
-
-_HTML_ENT = {"&gt;=": ">=", "&lt;=": "<=", "&gt;": ">", "&lt;": "<", "&amp;": "&"}
-
-
-def _decode(text) -> str:
-    if not isinstance(text, str):
-        return str(text) if text is not None else ""
-    for k, v in _HTML_ENT.items():
-        text = text.replace(k, v)
-    return text
-
-
-def _fix_mojibake(obj):
-    """Corrige texto UTF-8 que foi salvo/exportado como Latin-1."""
-    if isinstance(obj, str):
-        try:
-            return obj.encode("latin-1").decode("utf-8")
-        except (UnicodeDecodeError, UnicodeEncodeError):
-            return obj
-    if isinstance(obj, dict):
-        return {k: _fix_mojibake(v) for k, v in obj.items()}
-    if isinstance(obj, list):
-        return [_fix_mojibake(v) for v in obj]
-    return obj
 
 
 # Mesmo texto usado em atualizar_escoragens.py — precisa ficar em sync.
@@ -129,98 +117,6 @@ def _scan_classificacao(classificacao_raw: list) -> list:
                 "detalhe": f'Faixas sobrepostas entre "{nome1}" e "{nome2}".',
             })
     return issues
-
-
-_SENTINEL_WORKFLOW_IDS = {"options", "default"}
-
-
-def _build_graph(componentes: list) -> tuple:
-    """Indexa os nos por id e as ligacoes de saida (fonte de verdade do fluxo
-    -- `ligacoes.entrada` no JSON do motor e auto-referente/inconsistente e
-    nao deve ser usado)."""
-    nodes_by_id = {c["id"]: c for c in componentes if c.get("id")}
-    out_edges: dict = defaultdict(list)
-    for c in componentes:
-        cid = c.get("id")
-        for e in c.get("ligacoes", {}).get("saida", []):
-            tgt = e.get("target")
-            if tgt:
-                out_edges[cid].append((e.get("sourceHandle"), tgt))
-    return nodes_by_id, out_edges
-
-
-def _reachable_from(start_ids: list, out_edges: dict) -> set:
-    seen = set(start_ids)
-    fila = deque(start_ids)
-    while fila:
-        cur = fila.popleft()
-        for _, tgt in out_edges.get(cur, []):
-            if tgt not in seen:
-                seen.add(tgt)
-                fila.append(tgt)
-    return seen
-
-
-def _build_in_edges_index(out_edges: dict) -> dict:
-    idx: dict = defaultdict(set)
-    for src, edges in out_edges.items():
-        for _, tgt in edges:
-            idx[tgt].add(src)
-    return idx
-
-
-def _ancestors_of(node_id: str, in_edges_index: dict) -> set:
-    """Todos os nos que possuem algum caminho no fluxo ate `node_id`."""
-    seen: set = set()
-    fila = deque([node_id])
-    while fila:
-        cur = fila.popleft()
-        for src in in_edges_index.get(cur, []):
-            if src not in seen:
-                seen.add(src)
-                fila.append(src)
-    return seen
-
-
-def _walk_variable_refs(node):
-    """Percorre recursivamente um bloco `data` de componente e retorna os
-    `attrs` de cada `variableComponent` encontrado (referencias a variaveis
-    de outros nos, em condicionais, formulas, mensagens etc.)."""
-    if isinstance(node, dict):
-        if node.get("type") == "variableComponent":
-            attrs = node.get("attrs", {})
-            if attrs:
-                yield attrs
-        for v in node.values():
-            yield from _walk_variable_refs(v)
-    elif isinstance(node, list):
-        for item in node:
-            yield from _walk_variable_refs(item)
-
-
-def _declared_vars_of_variaveis_node(comp: dict) -> set:
-    return {
-        f"variable_{var['nome_variavel']}"
-        for var in comp.get("data", {}).get("variaveis", [])
-        if var.get("nome_variavel")
-    }
-
-
-def _comp_label(comp: dict) -> str:
-    d = comp.get("data", {})
-    return d.get("detalhes") or d.get("label") or comp.get("id", "—")
-
-
-def _ref_label(attrs: dict) -> str:
-    """Nome legivel de uma referencia de variavel (para exibicao), preferindo
-    o `label` humano ao token bruto `{{...}}`."""
-    label = _decode(attrs.get("label") or "").strip()
-    if label:
-        return label
-    content = attrs.get("content")
-    if content:
-        return _decode(content)
-    return attrs.get("variableId") or "variável"
 
 
 def _scan_estrutura_motor(componentes: list) -> list:
