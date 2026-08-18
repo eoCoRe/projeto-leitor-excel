@@ -377,7 +377,14 @@ def _scan_node(comp: dict) -> dict:
 
     soma_pesos = sum(_peso_to_float(v["peso"]) for g in grupos_parsed for v in g["variaveis"])
     total_pontos = soma_pesos * 1000
-    if abs(soma_pesos - 1.0) > 0.001:
+
+    # Nó "utilitário": uma única variável (normalmente com uma única regra
+    # catch-all) usado só pra forçar um score fixo/default, não pra compor
+    # varias variaveis ponderadas -- a soma de pesos = 100% não se aplica.
+    total_vars = sum(len(g["variaveis"]) for g in grupos_parsed)
+    is_utilitario = total_vars == 1
+
+    if not is_utilitario and abs(soma_pesos - 1.0) > 0.001:
         diff_pp = (1.0 - soma_pesos) * 100
         issues.append({
             "nivel": "erro", "categoria": "Peso total",
@@ -446,6 +453,7 @@ def _scan_node(comp: dict) -> dict:
         "formato": formato,
         "soma_pesos": soma_pesos,
         "total_pontos": total_pontos,
+        "is_utilitario": is_utilitario,
         "issues": issues,
     }
 
@@ -573,9 +581,10 @@ for s in scans:
     n_err = sum(1 for i in s["issues"] if i["nivel"] == "erro")
     n_warn = sum(1 for i in s["issues"] if i["nivel"] == "aviso")
     status = "✅ OK" if not s["issues"] else f"⚠️ {n_err} erro(s), {n_warn} aviso(s)"
+    formato = s["formato"] + (" · utilitário" if s["is_utilitario"] else "")
     resumo_rows.append({
         "Nó": s["nome"],
-        "Formato": s["formato"],
+        "Formato": formato,
         "Soma dos pesos": f"{s['soma_pesos'] * 100:.1f}%",
         "Pontuação máxima": f"{_fmt_num(round(s['total_pontos'], 1))} pts",
         "Status": status,
@@ -590,7 +599,9 @@ escolha = st.selectbox("Escolha o nó de escoragem para revisar", list(options.k
 scan = options[escolha]
 
 m1, m2 = st.columns(2)
-if abs(scan["soma_pesos"] - 1.0) <= 0.001:
+if scan["is_utilitario"]:
+    m1.info(f"Soma dos pesos: {scan['soma_pesos'] * 100:.1f}% (nó utilitário — score fixo, checagem de 100% não se aplica)")
+elif abs(scan["soma_pesos"] - 1.0) <= 0.001:
     m1.success(f"Soma dos pesos: {scan['soma_pesos'] * 100:.1f}%")
 else:
     m1.error(f"Soma dos pesos: {scan['soma_pesos'] * 100:.1f}%")
@@ -613,5 +624,7 @@ else:
 
 st.caption(
     "As checagens de \"faixa não atingir 100%\" e de cobertura da classificação "
-    "de risco são heurísticas — revise manualmente antes de confirmar."
+    "de risco são heurísticas — revise manualmente antes de confirmar. Nós de escoragem com "
+    "uma única variável (marcados \"utilitário\") são tratados como nós de score fixo/default "
+    "e não são cobrados a somar 100% de peso."
 )
