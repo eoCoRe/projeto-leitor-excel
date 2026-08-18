@@ -303,6 +303,7 @@ def _scan_estrutura_motor(componentes: list) -> list:
         return ancestors_cache[node_id]
 
     vistos = set()
+    usados: set = set()
     for c in componentes:
         cid = c.get("id")
         label = _comp_label(c)
@@ -312,6 +313,8 @@ def _scan_estrutura_motor(componentes: list) -> list:
             varid = attrs.get("variableId")
             if not nwid or nwid in _SENTINEL_WORKFLOW_IDS:
                 continue
+
+            usados.add((nwid, varid))
 
             chave = (cid, nwid, varid)
             if chave in vistos:
@@ -337,6 +340,44 @@ def _scan_estrutura_motor(componentes: list) -> list:
                     f'Variável "{ref_label}" está fora de ordem: depende do nó "{_comp_label(producer)}", '
                     "que não é alcançado em nenhum caminho do fluxo antes deste ponto — a variável "
                     "nunca teria sido calculada quando este nó executa.")
+
+    # Variavel customizada declarada mas nunca referenciada em nenhum outro
+    # lugar do motor -- provavel sobra de uma versao antiga. So conta
+    # "variavel_customizada" de fato -- nomes reservados (ex: "classificacao",
+    # "data_validade_limite") sao consumidos pela esteira/plataforma, nao por
+    # referencias internas, entao nao contam como "nao usada".
+    for c in componentes:
+        if c.get("type") != "variaveisNode":
+            continue
+        cid = c.get("id")
+        for var in c.get("data", {}).get("variaveis", []):
+            if var.get("nome") != "variavel_customizada":
+                continue
+            nv = var.get("nome_variavel")
+            if not nv:
+                continue
+            if (cid, f"variable_{nv}") not in usados:
+                add("aviso", "Variável customizada não usada", cid, _comp_label(c),
+                    f'Variável "{var.get("label") or nv}" é declarada neste nó de Variáveis, mas '
+                    "não é referenciada em nenhum outro lugar do motor — provável sobra de uma versão anterior.")
+
+    # Condicional comparando operador numerico com variavel do tipo "options"
+    # (categorica) -- combinacao que nao faz sentido e costuma indicar
+    # condicao montada errada.
+    for c in componentes:
+        if "condicional" not in c.get("type", "").lower():
+            continue
+        cid = c.get("id")
+        operador = _decode(c.get("data", {}).get("condicao", "")).strip()
+        if operador not in (">", ">=", "<", "<="):
+            continue
+        tipo_refs = list(_walk_variable_refs(c.get("data", {}).get("tipo", {})))
+        for attrs in tipo_refs:
+            if attrs.get("variableType") == "options":
+                add("erro", "Condicional com tipos incompatíveis", cid, _comp_label(c),
+                    f'Condicional usa o operador numérico "{operador}" sobre a variável '
+                    f'"{_ref_label(attrs)}", que é do tipo categórico (options) — '
+                    "operador numérico não faz sentido para um valor categórico.")
 
     # Nomes de variavel customizada duplicados entre nos de Variaveis diferentes
     donos: dict = defaultdict(list)
