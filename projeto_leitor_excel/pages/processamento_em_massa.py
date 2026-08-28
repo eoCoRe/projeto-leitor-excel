@@ -1,15 +1,14 @@
 """
 Processamento em Massa
 Versao integrada da ferramenta local "envio-massa-api.html": anexa uma
-planilha, monta uma requisicao por linha a partir de um template com
-placeholders {{Coluna}} e envia para uma API (ex.: disparo de esteiras de
-credito), com token Bearer, intervalo controlado entre envios e modo de
-teste (dry-run) que monta as requisicoes sem enviar de verdade. Rodar o
-envio no servidor (em vez de fetch no navegador) evita bloqueios de CORS.
+planilha, escolhe qual coluna e o documento (CNPJ) e envia um por um para
+a API de integracao de uma esteira de credito, com token Bearer, intervalo
+controlado entre envios e modo de teste (dry-run) que monta as requisicoes
+sem enviar de verdade. Rodar o envio no servidor (em vez de fetch no
+navegador) evita bloqueios de CORS.
 """
 
 import json
-import re
 import time
 
 import pandas as pd
@@ -18,11 +17,9 @@ import streamlit as st
 
 st.set_page_config(page_title="Processamento em Massa", layout="wide")
 
-_PLACEHOLDER_RE = re.compile(r"\{\{\s*([^}]+?)\s*\}\}")
-
-DEFAULT_URL = "https://app-api.neocredit.com.br/empresa-esteira-solicitacao/3142/integracao"
+DEFAULT_URL_BASE = "https://app-api.neocredit.com.br/empresa-esteira-solicitacao"
+DEFAULT_ESTEIRA_ID = "3142"
 DEFAULT_HEADERS = '{"accept": "application/json"}'
-DEFAULT_BODY = '{"documento": "{{documento}}"}'
 
 
 def _cell_to_str(val) -> str:
@@ -36,31 +33,30 @@ def _cell_to_str(val) -> str:
     return str(val).strip()
 
 
-def _fill_template(node, row: pd.Series):
-    if isinstance(node, str):
-        return _PLACEHOLDER_RE.sub(lambda m: _cell_to_str(row.get(m.group(1))), node)
-    if isinstance(node, list):
-        return [_fill_template(v, row) for v in node]
-    if isinstance(node, dict):
-        return {k: _fill_template(v, row) for k, v in node.items()}
-    return node
-
-
 st.title("Processamento em Massa")
 st.caption(
-    "Envia uma planilha linha a linha para uma API (ex.: disparar uma esteira "
-    "de crédito para cada CNPJ). Monta o corpo da requisição a partir de um "
-    "template com placeholders `{{Coluna}}`, com intervalo controlado entre "
-    "envios e um modo de teste (dry-run) que monta as requisições sem enviar "
-    "de verdade. Nada é enviado até você clicar em \"Iniciar envio\"."
+    "Envia uma planilha linha a linha para a API de integração de uma "
+    "esteira de crédito: um documento (CNPJ) por requisição, com intervalo "
+    "controlado entre envios e um modo de teste (dry-run) que monta as "
+    "requisições sem enviar de verdade. Nada é enviado até você clicar em "
+    "\"Iniciar envio\"."
 )
 
 st.subheader("1. Requisição")
-col_url, col_method = st.columns([3, 1])
-with col_url:
-    url = st.text_input("URL do endpoint", value=DEFAULT_URL)
+col_base, col_esteira, col_method = st.columns([3, 1, 1])
+with col_base:
+    url_base = st.text_input("URL base", value=DEFAULT_URL_BASE)
+with col_esteira:
+    esteira_id = st.text_input(
+        "Esteira",
+        value=DEFAULT_ESTEIRA_ID,
+        help="ID da esteira de crédito de destino.",
+    )
 with col_method:
     metodo = st.selectbox("Método", ["POST", "GET", "PUT", "PATCH", "DELETE"])
+
+url = f"{url_base.strip().rstrip('/')}/{esteira_id.strip()}/integracao"
+st.caption(f"URL final: `{url}`")
 
 col_delay, col_token = st.columns([1, 2])
 with col_delay:
@@ -78,15 +74,6 @@ headers_text = st.text_area(
     value=DEFAULT_HEADERS,
     height=70,
     help="Content-Type e Authorization são adicionados automaticamente.",
-)
-
-if "pm_body" not in st.session_state:
-    st.session_state.pm_body = DEFAULT_BODY
-st.text_area(
-    "Template do corpo (JSON)",
-    key="pm_body",
-    height=90,
-    help="Use {{NomeDaColuna}} para inserir valores da planilha.",
 )
 
 st.subheader("2. Planilha")
@@ -120,14 +107,17 @@ if st.session_state.get("pm_data_key") != data_key:
     st.session_state.pm_nonce = 0
     st.session_state.pop("pm_results", None)
 
-col_insert, col_btn = st.columns([3, 1])
-with col_insert:
-    placeholder_col = st.selectbox("Inserir coluna no template do corpo", df_raw.columns)
-with col_btn:
-    st.write("")
-    if st.button("Inserir placeholder", use_container_width=True):
-        st.session_state.pm_body += "{{" + placeholder_col + "}}"
-        st.rerun()
+colunas_doc = df_raw.columns.tolist()
+doc_col_default = 0
+for candidato in ("CNPJ_ENVIO_FINAL", "documento", "CNPJ"):
+    if candidato in colunas_doc:
+        doc_col_default = colunas_doc.index(candidato)
+        break
+doc_col = st.selectbox(
+    "Coluna que representa o documento (CNPJ) a enviar para a esteira",
+    colunas_doc,
+    index=doc_col_default,
+)
 
 st.caption(f"{len(df_raw)} linha(s) carregada(s) de \"{uploaded.name}\".")
 
@@ -221,12 +211,6 @@ iniciar = st.button(
 
 if iniciar:
     try:
-        template = json.loads(st.session_state.pm_body)
-    except json.JSONDecodeError as e:
-        st.error(f"O template do corpo não é um JSON válido: {e}")
-        st.stop()
-
-    try:
         extra_headers = json.loads(headers_text) if headers_text.strip() else {}
     except json.JSONDecodeError as e:
         st.error(f"Headers extras não são um JSON válido: {e}")
@@ -248,7 +232,7 @@ if iniciar:
     total = len(selecionadas)
 
     for i, (idx, row) in enumerate(selecionadas.iterrows()):
-        body = _fill_template(template, row)
+        body = {"documento": _cell_to_str(row.get(doc_col))}
         headers = {"accept": "application/json", **extra_headers}
         if token.strip():
             headers["Authorization"] = f"Bearer {token.strip()}"
