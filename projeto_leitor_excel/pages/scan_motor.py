@@ -17,17 +17,9 @@ import streamlit as st
 
 from exportar_escoragem import _fmt_num, _parse_classificacao, _parse_grupos, _peso_to_float
 from motor_graph import (
-    SENTINEL_WORKFLOW_IDS as _SENTINEL_WORKFLOW_IDS,
-    ancestors_of as _ancestors_of,
-    build_graph as _build_graph,
-    build_in_edges_index as _build_in_edges_index,
-    comp_label as _comp_label,
-    declared_vars_of_variaveis_node as _declared_vars_of_variaveis_node,
     decode as _decode,
     fix_mojibake as _fix_mojibake,
-    reachable_from as _reachable_from,
-    ref_label as _ref_label,
-    walk_variable_refs as _walk_variable_refs,
+    scan_estrutura_motor as _scan_estrutura_motor,
 )
 
 st.set_page_config(page_title="Scan do Motor", layout="wide")
@@ -116,181 +108,6 @@ def _scan_classificacao(classificacao_raw: list) -> list:
                 "nivel": "aviso", "categoria": "Classificação de risco",
                 "detalhe": f'Faixas sobrepostas entre "{nome1}" e "{nome2}".',
             })
-    return issues
-
-
-def _scan_estrutura_motor(componentes: list) -> list:
-    """Valida o grafo do motor inteiro (todos os tipos de no, nao so
-    escoragem): nos soltos/desconectados, ramos de condicional/switch sem
-    ligacao, status intermediario sem continuacao, referencias de variavel
-    para nos que nao existem mais, variaveis customizadas nao declaradas no
-    no de origem, e variaveis referenciadas antes de terem sido calculadas
-    em qualquer caminho possivel do fluxo."""
-    issues = []
-
-    def add(nivel, categoria, comp_id, comp_label, detalhe):
-        issues.append({
-            "nivel": nivel, "categoria": categoria,
-            "id": comp_id, "no": comp_label, "detalhe": detalhe,
-        })
-
-    nodes_by_id, out_edges = _build_graph(componentes)
-    in_edges_index = _build_in_edges_index(out_edges)
-    start_ids = [c["id"] for c in componentes if c.get("type") == "startNode"]
-    reachable = _reachable_from(start_ids, out_edges)
-
-    # Nos desconectados do fluxo (nenhum caminho a partir do Inicio chega neles)
-    for c in componentes:
-        cid = c.get("id")
-        if cid in start_ids or cid in reachable:
-            continue
-        label = _comp_label(c)
-        add("erro", "Nó desconectado", cid, label,
-            f'Nó "{label}" ({c.get("type")}) não é alcançável a partir do Início — '
-            "nenhuma ligação de outro nó chega até ele.")
-
-    # Ramos de condicional (se-sim / se-nao) sem ligacao de saida
-    for c in componentes:
-        if "condicional" not in c.get("type", "").lower():
-            continue
-        cid = c.get("id")
-        label = _comp_label(c)
-        handles = {h for h, _ in out_edges.get(cid, [])}
-        for esperado in ("se-sim", "se-nao"):
-            if esperado not in handles:
-                add("erro", "Ramo de condicional sem conexão", cid, label,
-                    f'Condicional "{label}": ramo "{esperado}" não tem nenhuma ligação de saída.')
-
-    # switchNode: cases sem ligacao, e ausencia de caminho default
-    for c in componentes:
-        if c.get("type") != "switchNode":
-            continue
-        cid = c.get("id")
-        label = _comp_label(c)
-        handles = {h for h, _ in out_edges.get(cid, [])}
-        for case in c.get("data", {}).get("cases", []):
-            case_id = case.get("id")
-            if case_id not in handles:
-                add("erro", "Case de switch sem conexão", cid, label,
-                    f'Switch "{label}": case "{case.get("name", case_id)}" não tem nenhuma ligação de saída.')
-        if "default" not in handles:
-            add("aviso", "Switch sem caminho default", cid, label,
-                f'Switch "{label}": não há ligação para o caso "default" — '
-                "se nenhum case corresponder em tempo de execução, o fluxo fica sem destino.")
-
-    # Status intermediario (final != true) sem nenhuma ligacao de saida
-    for c in componentes:
-        if c.get("type") not in ("statusNode", "statusNodeV2"):
-            continue
-        cid = c.get("id")
-        d = c.get("data", {})
-        if d.get("final") or out_edges.get(cid):
-            continue
-        add("erro", "Status intermediário sem continuação", cid, _comp_label(c),
-            f'Status (status="{d.get("status")}") não está marcado como final e não tem '
-            "nenhuma ligação de saída — o fluxo terminaria implicitamente, sem desfecho formal.")
-
-    # Referencias de variavel: no de origem inexistente / variavel nao declarada / usada antes de calculada
-    ancestors_cache: dict = {}
-
-    def ancestors(node_id):
-        if node_id not in ancestors_cache:
-            ancestors_cache[node_id] = _ancestors_of(node_id, in_edges_index)
-        return ancestors_cache[node_id]
-
-    vistos = set()
-    usados: set = set()
-    for c in componentes:
-        cid = c.get("id")
-        label = _comp_label(c)
-        for attrs in _walk_variable_refs(c.get("data", {})):
-            nwid = attrs.get("nodeWorkflowId")
-            nwtype = attrs.get("nodeWorkflowType")
-            varid = attrs.get("variableId")
-            if not nwid or nwid in _SENTINEL_WORKFLOW_IDS:
-                continue
-
-            usados.add((nwid, varid))
-
-            chave = (cid, nwid, varid)
-            if chave in vistos:
-                continue
-            vistos.add(chave)
-
-            ref_label = _ref_label(attrs)
-
-            producer = nodes_by_id.get(nwid)
-            if producer is None:
-                add("erro", "Referência a nó inexistente", cid, label,
-                    f'Variável "{ref_label}" está quebrada: o nó de onde ela vinha não existe mais '
-                    "no motor (removido ou renomeado).")
-                continue
-
-            if nwtype == "variaveisNode" and varid not in _declared_vars_of_variaveis_node(producer):
-                add("erro", "Variável não declarada", cid, label,
-                    f'Variável "{ref_label}" está quebrada: o nó de Variáveis "{_comp_label(producer)}" '
-                    "não declara mais essa variável (foi renomeada ou removida lá).")
-
-            if nwid != cid and cid in reachable and nwid not in ancestors(cid):
-                add("erro", "Variável usada antes de calculada", cid, label,
-                    f'Variável "{ref_label}" está fora de ordem: depende do nó "{_comp_label(producer)}", '
-                    "que não é alcançado em nenhum caminho do fluxo antes deste ponto — a variável "
-                    "nunca teria sido calculada quando este nó executa.")
-
-    # Variavel customizada declarada mas nunca referenciada em nenhum outro
-    # lugar do motor -- provavel sobra de uma versao antiga. So conta
-    # "variavel_customizada" de fato -- nomes reservados (ex: "classificacao",
-    # "data_validade_limite") sao consumidos pela esteira/plataforma, nao por
-    # referencias internas, entao nao contam como "nao usada".
-    for c in componentes:
-        if c.get("type") != "variaveisNode":
-            continue
-        cid = c.get("id")
-        for var in c.get("data", {}).get("variaveis", []):
-            if var.get("nome") != "variavel_customizada":
-                continue
-            nv = var.get("nome_variavel")
-            if not nv:
-                continue
-            if (cid, f"variable_{nv}") not in usados:
-                add("aviso", "Variável customizada não usada", cid, _comp_label(c),
-                    f'Variável "{var.get("label") or nv}" é declarada neste nó de Variáveis, mas '
-                    "não é referenciada em nenhum outro lugar do motor — provável sobra de uma versão anterior.")
-
-    # Condicional comparando operador numerico com variavel do tipo "options"
-    # (categorica) -- combinacao que nao faz sentido e costuma indicar
-    # condicao montada errada.
-    for c in componentes:
-        if "condicional" not in c.get("type", "").lower():
-            continue
-        cid = c.get("id")
-        operador = _decode(c.get("data", {}).get("condicao", "")).strip()
-        if operador not in (">", ">=", "<", "<="):
-            continue
-        tipo_refs = list(_walk_variable_refs(c.get("data", {}).get("tipo", {})))
-        for attrs in tipo_refs:
-            if attrs.get("variableType") == "options":
-                add("erro", "Condicional com tipos incompatíveis", cid, _comp_label(c),
-                    f'Condicional usa o operador numérico "{operador}" sobre a variável '
-                    f'"{_ref_label(attrs)}", que é do tipo categórico (options) — '
-                    "operador numérico não faz sentido para um valor categórico.")
-
-    # Nomes de variavel customizada duplicados entre nos de Variaveis diferentes
-    donos: dict = defaultdict(list)
-    for c in componentes:
-        if c.get("type") != "variaveisNode":
-            continue
-        for var in c.get("data", {}).get("variaveis", []):
-            nv = var.get("nome_variavel")
-            if nv:
-                donos[nv].append((c.get("id"), _comp_label(c)))
-    for nv, lista in donos.items():
-        if len(lista) > 1:
-            nomes = ", ".join(f'"{lbl}"' for _, lbl in lista)
-            add("aviso", "Nome de variável duplicado", lista[0][0], nv,
-                f'A variável customizada "{nv}" é declarada em mais de um nó de Variáveis: {nomes}. '
-                "As referências usam o nó de origem para desambiguar, mas isso é um risco de confusão/copy-paste.")
-
     return issues
 
 
@@ -500,7 +317,13 @@ if not nos_escoragem:
 
 st.subheader("Validação de Escoragem")
 
+estrutura_por_id: dict = defaultdict(list)
+for issue in estrutura_issues:
+    estrutura_por_id[issue["id"]].append(issue)
+
 scans = [_scan_node(c) for c in nos_escoragem]
+for s in scans:
+    s["issues"] = s["issues"] + estrutura_por_id.get(s["id"], [])
 
 n_antigo = sum(1 for s in scans if s["formato"].startswith("V1"))
 n_com_pendencia = sum(1 for s in scans if s["issues"])

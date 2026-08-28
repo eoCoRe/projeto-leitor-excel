@@ -1,16 +1,20 @@
 """
 Scan da Esteira
 Valida uma esteira de credito e a integracao com os motores que ela chama
-(nos `motorNode`): confere se cada motor enviado junto realmente produz o
-que a esteira espera dele (status final, classificacao/risco/escore/limite/
-data de validade, ou variaveis customizadas especificas), se os campos
-iniciais da esteira referenciados existem, e faz uma checagem estrutural
-leve da propria esteira (nos desconectados, ramos de condicional/switch sem
-ligacao).
+(nos `motorNode`): roda a checagem estrutural completa do Scan do Motor
+(nos desconectados, ramos sem ligacao, referencias de variavel quebradas ou
+fora de ordem) em cada motor enviado, confere se cada motor realmente
+produz o que a esteira espera dele (status final, classificacao/risco/
+escore/limite/data de validade, ou variaveis customizadas especificas), se
+os campos iniciais da esteira referenciados existem, e faz uma checagem
+estrutural leve da propria esteira (nos desconectados, ramos de
+condicional/switch sem ligacao) -- tudo num relatorio so, sem precisar
+rodar o Scan do Motor separadamente para cada motor.
 """
 
 import json
 import re
+from collections import defaultdict
 
 import pandas as pd
 import streamlit as st
@@ -23,6 +27,7 @@ from motor_graph import (
     fix_mojibake,
     reachable_from,
     ref_label,
+    scan_estrutura_motor,
     walk_variable_refs,
 )
 
@@ -126,9 +131,10 @@ def _scan_esteira_estrutura(componentes: list) -> list:
 
 st.title("Scan da Esteira")
 st.caption(
-    "Valida a integração entre uma esteira de crédito e os motores que ela chama: confere se "
-    "cada motor enviado junto realmente produz o que a esteira espera dele (status, classificação, "
-    "risco, escore, limite sugerido, data de validade, ou variáveis customizadas específicas)."
+    "Valida a integração entre uma esteira de crédito e os motores que ela chama: roda a checagem "
+    "estrutural completa do Scan do Motor em cada motor enviado, confere se cada motor realmente "
+    "produz o que a esteira espera dele (status, classificação, risco, escore, limite sugerido, "
+    "data de validade, ou variáveis customizadas específicas) — tudo num relatório só."
 )
 
 st.subheader("1. Esteira")
@@ -228,10 +234,10 @@ if motor_nodes and motores_uploaded:
 st.divider()
 
 if motor_nodes:
-    st.subheader("3. Validação cruzada: esteira × motor")
-
     cross_issues = []
     nao_validados = []
+    estrutura_motor_issues: dict = {}
+    motores_usados_por: dict = defaultdict(list)
 
     def add_cross(nivel, categoria, comp_id, comp_lbl, detalhe):
         cross_issues.append({"nivel": nivel, "categoria": categoria, "id": comp_id, "no": comp_lbl, "detalhe": detalhe})
@@ -259,6 +265,9 @@ if motor_nodes:
 
         nome_real = arquivo
         motor_comps = motores_uploaded[arquivo]
+        motores_usados_por[arquivo].append(mn_label)
+        if arquivo not in estrutura_motor_issues:
+            estrutura_motor_issues[arquivo] = scan_estrutura_motor(motor_comps)
         analise = _analisar_motor(motor_comps)
 
         for c in esteira_componentes:
@@ -297,6 +306,42 @@ if motor_nodes:
                             "nó de Variáveis alcançável nesse motor declara essa variável (renomeada, removida, "
                             "ou o motor enviado não é a versão certa).")
 
+    st.subheader("3. Estrutura interna dos motores enviados")
+    st.caption(
+        "Mesma checagem estrutural completa do Scan do Motor (nós desconectados, ramos de "
+        "condicional/switch sem ligação, referências de variável quebradas ou usadas fora de "
+        "ordem) — rodada automaticamente em cada motor enviado acima, sem precisar abrir o Scan "
+        "do Motor à parte."
+    )
+    if not estrutura_motor_issues:
+        st.info("Nenhum motor associado ainda — envie e associe os motores na seção 2 acima.")
+    else:
+        n_err_estrutura = sum(1 for issues in estrutura_motor_issues.values() for i in issues if i["nivel"] == "erro")
+        n_warn_estrutura = sum(1 for issues in estrutura_motor_issues.values() for i in issues if i["nivel"] == "aviso")
+        me1, me2 = st.columns(2)
+        me1.metric("Erros estruturais (todos os motores)", n_err_estrutura)
+        me2.metric("Avisos estruturais (todos os motores)", n_warn_estrutura)
+        for arquivo, issues in estrutura_motor_issues.items():
+            usado_por = ", ".join(f'"{lbl}"' for lbl in motores_usados_por[arquivo])
+            n_err = sum(1 for i in issues if i["nivel"] == "erro")
+            n_warn = sum(1 for i in issues if i["nivel"] == "aviso")
+            titulo = f'Motor "{arquivo}" (nó(s) da esteira: {usado_por})'
+            if not issues:
+                st.success(f"{titulo} — nenhuma pendência estrutural.")
+                continue
+            with st.expander(f"{titulo} — ⚠️ {n_err} erro(s), {n_warn} aviso(s)", expanded=n_err > 0):
+                st.dataframe(
+                    pd.DataFrame([
+                        {"Nível": i["nivel"].capitalize(), "Nó": i["no"], "Detalhe": i["detalhe"]}
+                        for i in issues
+                    ]),
+                    use_container_width=True, hide_index=True,
+                )
+
+    st.divider()
+
+    st.subheader("4. Validação cruzada: esteira × motor")
+
     if nao_validados:
         st.warning(f"{len(nao_validados)} motorNode(s) não puderam ser validados — motor correspondente não foi enviado.")
         st.dataframe(pd.DataFrame(nao_validados), use_container_width=True, hide_index=True)
@@ -323,7 +368,7 @@ if motor_nodes:
     st.divider()
 
 # Campos iniciais da esteira referenciados vs declarados
-st.subheader("4. Campos iniciais da esteira")
+st.subheader("5. Campos iniciais da esteira")
 campos_declarados = {
     c.get("nome") for c in esteira_data.get("estrutura_inicio_execucao", {}).get("campos", []) if c.get("nome")
 }
@@ -350,7 +395,7 @@ else:
 
 st.divider()
 
-st.subheader("5. Validação estrutural da esteira")
+st.subheader("6. Validação estrutural da esteira")
 estrutura_issues = _scan_esteira_estrutura(esteira_componentes)
 if not estrutura_issues:
     st.success("Nenhuma pendência estrutural encontrada na esteira (nós desconectados, ramos sem ligação).")
